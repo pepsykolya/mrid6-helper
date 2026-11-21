@@ -15,15 +15,18 @@ namespace Mrid6Helper
     /// <summary>Настройки приложения (простой key=value в %APPDATA%\Mrid6Helper\settings.ini)</summary>
     sealed class Cfg
     {
-        public bool CustomPower;               // «свои лимиты» внутри пользовательского режима
+        public bool CustomPower = true;        // «свои лимиты» внутри пользовательского режима (по умолчанию включены)
         public bool KbRainbow;                 // последний выбор подсветки — программная радуга
-        public int Spl = 101, Sppt = 105, Wall = 99;           // пределы вендора: SPL 95..105, SPPT 105..120, стенка 89..100
+        public int Spl = 82, Sppt = 92, Wall = 90;             // сниженные лимиты профиля «Свой» (плата принимает и значения ниже диапазона вендора 95..105: проверено)
         public int FanPct = 60;                // значение для «фиксированных оборотов»
         public bool Osd;
         public bool CloseToTray = true;
         public bool NoSave;                    // самотест: не писать настройки
         public bool CustomActive;              // пользовательский режим выбран (восстанавливается при запуске)
-        public int CustomBase;                 // базовый режим платы: индекс списка 0 баланс, 1 тихий, 2 производительность
+        public int CustomBase = 2;             // базовый режим платы: индекс списка 0 баланс, 1 тихий, 2 производительность (по умолчанию «Производительность»)
+        public int KbVb = -1;                  // яркость подсветки, % (плавная); -1 — не задана
+        public string KbColor = "";            // выбранный цвет подсветки RRGGBB (полная яркость)
+        public int SettingsVer;                // 2 — профиль «Свой» по умолчанию: Производительность + сниженные лимиты
         public int FanKind;                    // 0 кривая, 1 автоматика платы, 2 фиксированные обороты
         public int CurveSmooth = 5;            // плавность кривой 1..10
         public string Curve = "";              // точки кривой «t:p,t:p,...»
@@ -49,6 +52,9 @@ namespace Mrid6Helper
                     switch (k)
                     {
                         case "KbRainbow": c.KbRainbow = b; break;
+                        case "SettingsVer": if (int.TryParse(v, out n)) c.SettingsVer = n; break;
+                        case "KbVb": if (int.TryParse(v, out n)) c.KbVb = n; break;
+                        case "KbColor": c.KbColor = v; break;
                         case "Spl": if (int.TryParse(v, out n)) c.Spl = n; break;
                         case "Sppt": if (int.TryParse(v, out n)) c.Sppt = n; break;
                         case "Wall": if (int.TryParse(v, out n)) c.Wall = n; break;
@@ -65,7 +71,8 @@ namespace Mrid6Helper
                 }
             }
             catch { }
-            c.Spl = Clamp(c.Spl, 95, 105); c.Sppt = Clamp(c.Sppt, 105, 120); c.Wall = Clamp(c.Wall, 89, 100);
+            if (c.SettingsVer < 2) { c.Spl = 82; c.Sppt = 92; c.Wall = 90; c.CustomBase = 2; c.CustomPower = true; c.SettingsVer = 2; }   // миграция: новые умолчания профиля «Свой»
+            c.Spl = Clamp(c.Spl, 50, 105); c.Sppt = Clamp(c.Sppt, 60, 120); c.Wall = Clamp(c.Wall, 80, 100);
             c.FanPct = Clamp(c.FanPct, 30, 100); c.CustomBase = Clamp(c.CustomBase, 0, 2); c.FanKind = Clamp(c.FanKind, 0, 2); c.CurveSmooth = Clamp(c.CurveSmooth, 1, 10);
             return c;
         }
@@ -75,10 +82,12 @@ namespace Mrid6Helper
             if (NoSave) return;
             try
             {
-                List<string> lines = new List<string> { "KbRainbow=" + (KbRainbow ? 1 : 0), "Spl=" + Spl, "Sppt=" + Sppt, "Wall=" + Wall,
+                List<string> lines = new List<string> { "SettingsVer=2", "KbRainbow=" + (KbRainbow ? 1 : 0), "Spl=" + Spl, "Sppt=" + Sppt, "Wall=" + Wall,
                     "Osd=" + (Osd ? 1 : 0), "CloseToTray=" + (CloseToTray ? 1 : 0), "FanPct=" + FanPct, "CustomLimits=" + (CustomPower ? 1 : 0),
                     "CustomActive=" + (CustomActive ? 1 : 0), "CustomBase=" + CustomBase, "FanKind=" + FanKind, "CurveSmooth=" + CurveSmooth };
                 if (!string.IsNullOrEmpty(Curve)) lines.Add("Curve=" + Curve);
+                if (KbVb >= 0) lines.Add("KbVb=" + KbVb);
+                if (!string.IsNullOrEmpty(KbColor)) lines.Add("KbColor=" + KbColor);
                 File.WriteAllText(PathFile(), string.Join(Environment.NewLine, lines.ToArray()));
             }
             catch { }
@@ -237,6 +246,14 @@ namespace Mrid6Helper
         readonly CheckBox cOsd = new ToggleBox(), cTrayClose = new ToggleBox(), cAuto = new ToggleBox();
         readonly Label status = new Label();
         Color _kbColor = Color.White;
+        // плавная яркость: плата умеет 4 ступени (0–3), промежуточное значение = ступень + масштаб цвета в регистре
+        double _vb = 100;                    // яркость, % (0…100)
+        double _kbScale = 1;                 // множитель цвета внутри ступени
+        int _hwLvl = -1, _kbHwMode = 2;      // ступень и режим платы, как мы их знаем
+        int _ownLevel = -1, _ownTick;        // последняя наша запись ступени (чтобы отличить своё событие от клавиши)
+        int _fnbTick, _fnbCount, _lastEcTick, _rampDir = 1;
+        bool _ramping;
+        System.Windows.Forms.Timer _rampTimer;
 
         sealed class DoubleBufferedPanel : Panel { public DoubleBufferedPanel() { DoubleBuffered = true; ResizeRedraw = true; } }
 
@@ -346,9 +363,10 @@ namespace Mrid6Helper
             Flat(cPower); cPower.Text = "Свои лимиты питания (включают режим «Производительность»)";
             Row(b3, cPower);
             TableLayoutPanel tpw = Grid(3, LabelW, 0, 52);
-            Slider(tpw, "SPL, Вт", tSpl, vSpl, 95, 105);
-            Slider(tpw, "SPPT, Вт", tSppt, vSppt, 105, 120);
-            Slider(tpw, "Температурная стенка, °C", tWall, vWall, 89, 100);
+            Slider(tpw, "SPL, Вт", tSpl, vSpl, 50, 105);
+            Slider(tpw, "SPPT, Вт", tSppt, vSppt, 60, 120);
+            Slider(tpw, "Температурная стенка, °C", tWall, vWall, 80, 100);
+            tSpl.ValueChanged += delegate { if (tSppt.Value < tSpl.Value + 5) tSppt.Value = Math.Min(tSppt.Maximum, tSpl.Value + 5); };   // SPPT не ниже SPL
             Row(b3, tpw);
             Button bApply = new Button { Text = "Применить лимиты", Height = 32 }; StyleBtn(bApply);
             bApply.Click += delegate { if (!_custom) rCustom.Checked = true; else ReapplyCustom(); };
@@ -359,7 +377,7 @@ namespace Mrid6Helper
                 if (_custom) ReapplyCustom(); else if (cPower.Checked) rCustom.Checked = true;
             };
             Row(b3, bApply);
-            Row(b3, Hint("Красная зона на графике — защитный пол: ниже него кривую опустить нельзя. Потолок оборотов зависит от базового режима: «Тихий» ≈ 3600, «Баланс» ≈ 5000, «Производительность» ≈ 5800 об/мин — на жаре выбирайте не «Тихий». Диапазоны лимитов — как у вендора."));
+            Row(b3, Hint("Красная зона на графике — защитный пол: ниже него кривую опустить нельзя. Потолок оборотов зависит от базового режима: «Тихий» ≈ 3600, «Баланс» ≈ 5000, «Производительность» ≈ 5800 об/мин — на жаре выбирайте не «Тихий». Лимиты ниже штатных 95–105 Вт плата принимает (при SPL 60 / SPPT 70 нагрузка на CPU падает почти вдвое): чем ниже, тем тише и холоднее."));
             Fit(g3, b3, 40); flow.Controls.Add(g3);
 
             // --- Клавиатура ---
@@ -369,14 +387,16 @@ namespace Mrid6Helper
             cbKb.Items.AddRange(new object[] { "Выкл (яркость 0)", "Радуга (плавная)", "Один цвет", "Авто-режим платы" });
             cbKb.SelectedIndexChanged += delegate { if (!_loading && cbKb.SelectedIndex >= 0) SetKbMode(cbKb.SelectedIndex); };
             Pair(t5, "Режим подсветки", cbKb);
-            tBright.Minimum = 0; tBright.Maximum = 3; tBright.TickFrequency = 1; tBright.AutoSize = false; tBright.Height = 34; tBright.BackColor = Bg;
+            tBright.Minimum = 0; tBright.Maximum = 100; tBright.TickFrequency = 10; tBright.SmallChange = 2; tBright.LargeChange = 10; tBright.AutoSize = false; tBright.Height = 34; tBright.BackColor = Bg;
             tBright.ValueChanged += delegate
             {
                 if (_loading) return;
-                Touch(); Mi.Set(Mi.M_KBBRIGHT, (byte)tBright.Value);
-                bool l = _loading; _loading = true; cbKb.SelectedIndex = KbIndex(Mi.GetByte(Mi.M_KBMODE), tBright.Value); _loading = l;
+                ApplyBrightness(tBright.Value, false);
+                bool l = _loading; _loading = true; cbKb.SelectedIndex = KbIndex(_kbHwMode, _hwLvl); _loading = l;
             };
-            Pair(t5, "Яркость (0–3)", tBright);
+            tBright.MouseUp += delegate { if (!_loading) { _cfg.KbVb = (int)Math.Round(_vb); _cfg.Save(); } };
+            tBright.KeyUp += delegate { if (!_loading) { _cfg.KbVb = (int)Math.Round(_vb); _cfg.Save(); } };
+            Pair(t5, "Яркость, % (плавно)", tBright);
             bColor.Text = "Выбрать цвет…"; StyleBtn(bColor); bColor.Height = 30;
             bColor.Click += delegate { PickColor(); };
             Pair(t5, "Цвет", bColor);
@@ -516,9 +536,11 @@ namespace Mrid6Helper
         {
             base.OnShown(e);
             if (ShotPath == null && SelfTestPath == null)
-            {   // по умолчанию окно растянуто на всю высоту рабочей области экрана, по центру по горизонтали
-                Rectangle wa = Screen.FromControl(this).WorkingArea;
-                Bounds = new Rectangle(wa.Left + (wa.Width - Width) / 2, wa.Top, Width, wa.Height);
+            {
+                PlaceFullHeight();
+                System.Windows.Forms.Timer again = new System.Windows.Forms.Timer { Interval = 500 };      // повтор: после смены масштаба/монитора размер мог пересчитаться
+                again.Tick += delegate { again.Stop(); again.Dispose(); PlaceFullHeight(); };
+                again.Start();
             }
             FitAll();
             if (SelfTestPath != null) { _selfTest = true; _cfg.NoSave = true; new Thread(RunSelfTest) { IsBackground = true, Name = "selftest" }.Start(); return; }
@@ -541,6 +563,17 @@ namespace Mrid6Helper
                 _quit = true; Close();
             };
             t.Start();
+        }
+
+        /// <summary>По умолчанию окно растянуто на всю высоту рабочей области экрана (того, где курсор), по центру по горизонтали.</summary>
+        void PlaceFullHeight()
+        {
+            try
+            {
+                Rectangle wa = Screen.FromPoint(Cursor.Position).WorkingArea;
+                Bounds = new Rectangle(wa.Left + (wa.Width - Width) / 2, wa.Top, Width, wa.Height);
+            }
+            catch { }
         }
 
         public void ShowMain()
@@ -612,9 +645,23 @@ namespace Mrid6Helper
                 SyncMode(perf);
                 int v;
                 int kbm = Mi.GetByte(Mi.M_KBMODE), kbb = Mi.GetByte(Mi.M_KBBRIGHT);
-                if (kbb >= 0) tBright.Value = Cfg.Clamp(kbb, 0, 3);
+                _kbHwMode = kbm >= 0 ? kbm : 2; _hwLvl = kbb;
+                if (kbb >= 0)
+                {
+                    _vb = (_cfg.KbVb >= 0 && LevelFor(_cfg.KbVb) == kbb) ? _cfg.KbVb : kbb * 100.0 / 3.0;
+                    tBright.Value = Cfg.Clamp((int)Math.Round(_vb), 0, 100);
+                    _kbScale = kbb == 0 ? 1.0 : Math.Min(1.0, _vb / (kbb * 100.0 / 3.0));
+                }
                 if (kbm >= 0 && kbb >= 0) cbKb.SelectedIndex = KbIndex(kbm, kbb);
-                byte r, g, b; if (Mi.GetColor(out r, out g, out b)) { _kbColor = Color.FromArgb(r, g, b); bColor.BackColor = _kbColor; bColor.ForeColor = (r + g + b) > 380 ? Color.Black : Color.White; }
+                byte r, g, b;
+                if (!string.IsNullOrEmpty(_cfg.KbColor) && _cfg.KbColor.Length == 6)
+                { try { _kbColor = Color.FromArgb(Convert.ToInt32(_cfg.KbColor.Substring(0, 2), 16), Convert.ToInt32(_cfg.KbColor.Substring(2, 2), 16), Convert.ToInt32(_cfg.KbColor.Substring(4, 2), 16)); } catch { } }
+                else if (Mi.GetColor(out r, out g, out b))
+                {   // в регистре может лежать уже приглушённый цвет — приводим к полной яркости
+                    int mx = Math.Max(r, Math.Max(g, b)); double up = mx > 0 ? 255.0 / mx : 1.0;
+                    _kbColor = Color.FromArgb((int)Math.Min(255, Math.Round(r * up)), (int)Math.Min(255, Math.Round(g * up)), (int)Math.Min(255, Math.Round(b * up)));
+                }
+                bColor.BackColor = _kbColor; bColor.ForeColor = (_kbColor.R + _kbColor.G + _kbColor.B) > 380 ? Color.Black : Color.White;
                 v = Mi.GetByte(Mi.M_FNLOCK); if (v >= 0) cFnLock.Checked = v == 1;
                 v = Mi.GetByte(Mi.M_TPLOCK); if (v >= 0) cTp.Checked = v == 1;
                 v = Mi.GetByte(Mi.M_AMBIENT); if (v >= 0) cAmb.Checked = v == 1;
@@ -758,8 +805,70 @@ namespace Mrid6Helper
             return _boosted ? 100 : tFan.Value;
         }
 
-        /// <summary>Индекс списка: 0 «выкл» (яркость 0), 1 плавная радуга (программная), 2 один цвет, 3 собственный авто-режим платы.</summary>
-        int KbIndex(int mode, int bright) { return bright == 0 ? 0 : (_rainbow ? 1 : (mode == 1 ? 3 : 2)); }
+        /// <summary>Индекс списка: 0 «выкл» (ступень 0), 1 плавная радуга (программная), 2 один цвет, 3 собственный авто-режим платы.</summary>
+        int KbIndex(int mode, int level) { return level == 0 ? 0 : (_rainbow ? 1 : (mode == 1 ? 3 : 2)); }
+
+        // ---------------------------------------------------------------- плавная яркость
+        static int LevelFor(double vb) { if (vb <= 0.5) return 0; return Cfg.Clamp((int)Math.Ceiling((vb - 0.4) / 33.3334 - 1e-9), 1, 3); }   // 67 % ≡ ступень 2 (допуск на округление)
+        static Color ScaleColor(Color c, double k) { return Color.FromArgb((int)Math.Round(c.R * k), (int)Math.Round(c.G * k), (int)Math.Round(c.B * k)); }
+        void WriteScaledColor() { Color c = ScaleColor(_kbColor, _kbScale); Mi.Set(Mi.M_KBCOLOR, c.R, c.G, c.B); }
+
+        /// <summary>Задать яркость 0…100 %: ближайшая ступень платы сверху + множитель цвета. «Авто-режим платы» цвет из регистра не берёт — там только 4 ступени.</summary>
+        void ApplyBrightness(double vb, bool updateUi)
+        {
+            Touch();
+            _vb = Math.Max(0, Math.Min(100, vb));
+            bool scalable = !(_kbHwMode == 1 && !_rainbow);
+            int lvl;
+            if (scalable) { lvl = LevelFor(_vb); _kbScale = lvl == 0 ? 1.0 : Math.Min(1.0, _vb / (lvl * 100.0 / 3.0)); }
+            else { lvl = Cfg.Clamp((int)Math.Round(_vb / (100.0 / 3.0)), 0, 3); _kbScale = 1.0; }
+            if (lvl != _hwLvl) { _ownLevel = lvl; _ownTick = Environment.TickCount; Mi.Set(Mi.M_KBBRIGHT, (byte)lvl); _hwLvl = lvl; }
+            if (lvl > 0 && scalable && !_rainbow) WriteScaledColor();      // при радуге цвет пишет её поток (с тем же множителем)
+            if (updateUi) { bool l = _loading; _loading = true; tBright.Value = Cfg.Clamp((int)Math.Round(_vb), 0, 100); _loading = l; }
+        }
+
+        /// <summary>Событие яркости от платы (Fn+F9 / Fn+F8). Одиночное нажатие — ступень, как у платы; серия событий подряд (клавиша удерживается) — плавный ход.</summary>
+        void HandleFnBrightness(int val)
+        {
+            int now = Environment.TickCount;
+            if (val == _ownLevel && unchecked(now - _ownTick) < 250) return;      // это отражение нашей же записи
+            Touch();
+            int prev = _hwLvl < 0 ? val : _hwLvl;
+            int delta = ((val - prev) % 4 + 4) % 4;
+            int dir = delta == 3 ? -1 : 1;                                          // +1 → вверх, −1 → вниз (по циклу уровней платы)
+            bool within = _fnbCount > 0 && unchecked(now - _fnbTick) < 700;
+            _fnbTick = now; _lastEcTick = now;
+            if (_ramping) { _hwLvl = val; ApplyBrightness(_vb, true); return; }   // плата шагнула сама — возвращаем наше плавное значение
+            if (within) { _fnbCount++; _hwLvl = val; StartRamp(dir); return; }
+            _fnbCount = 1;
+            _hwLvl = val;                                                           // одиночное нажатие: плата уже на ступени val
+            _vb = val * 100.0 / 3.0;
+            ApplyBrightness(_vb, true);
+            _cfg.KbVb = (int)Math.Round(_vb); _cfg.Save();
+        }
+
+        void StartRamp(int dir)
+        {
+            _rampDir = dir; _ramping = true;
+            if (_rampTimer == null) { _rampTimer = new System.Windows.Forms.Timer { Interval = 50 }; _rampTimer.Tick += delegate { RampTick(); }; }
+            _rampTimer.Start();
+            Log.Write("brightness ramp start dir=" + dir + " vb=" + Math.Round(_vb));
+        }
+
+        void RampTick()
+        {
+            if (unchecked(Environment.TickCount - _lastEcTick) > 900) { StopRamp(); return; }   // событий нет — клавишу отпустили
+            _vb = Math.Max(0, Math.Min(100, _vb + _rampDir * 2.5));                            // ≈ 50 % в секунду
+            ApplyBrightness(_vb, true);
+        }
+
+        void StopRamp()
+        {
+            if (_rampTimer != null) _rampTimer.Stop();
+            _ramping = false; _fnbCount = 0;
+            _cfg.KbVb = (int)Math.Round(_vb); _cfg.Save();
+            Log.Write("brightness ramp stop vb=" + Math.Round(_vb));
+        }
 
         // --- плавная радуга: плата сама ничего не анимирует, поэтому перебираем оттенок через цветовой регистр
         Thread _rb;
@@ -780,7 +889,8 @@ namespace Mrid6Helper
             while (_rbOn && !_quit)
             {
                 byte r, g, b; Hsv(h, out r, out g, out b);
-                if (!Mi.Set(Mi.M_KBCOLOR, r, g, b)) Thread.Sleep(400);
+                double k = _kbScale;
+                if (!Mi.Set(Mi.M_KBCOLOR, (byte)Math.Round(r * k), (byte)Math.Round(g * k), (byte)Math.Round(b * k))) Thread.Sleep(400);
                 h += 2.4; if (h >= 360) h -= 360;               // полный круг ≈ 14 с
                 Thread.Sleep(80);
             }
@@ -790,9 +900,10 @@ namespace Mrid6Helper
         {
             StopRainbow();
             Touch();
-            Mi.Set(Mi.M_KBMODE, 2);
-            if (Mi.GetByte(Mi.M_KBBRIGHT) == 0) { Mi.Set(Mi.M_KBBRIGHT, 3); bool l = _loading; _loading = true; tBright.Value = 3; _loading = l; }
-            _rainbow = true; _rbOn = true;
+            Mi.Set(Mi.M_KBMODE, 2); _kbHwMode = 2;
+            _rainbow = true;
+            if (_hwLvl <= 0 || _vb <= 0.5) ApplyBrightness(100, true); else ApplyBrightness(_vb, false);
+            _rbOn = true;
             _rb = new Thread(delegate () { Thread.Sleep(500); RainbowLoop(); }) { IsBackground = true, Name = "rainbow" };   // 500 мс после режима — как у вендора
             _rb.Start();
         }
@@ -815,8 +926,8 @@ namespace Mrid6Helper
             StopRainbow();
             if (index == 0)
             {
-                ok = Mi.Set(Mi.M_KBBRIGHT, 0);
-                bool l = _loading; _loading = true; tBright.Value = 0; _loading = l;
+                ApplyBrightness(0, true); ok = true;
+                _cfg.KbVb = 0; _cfg.Save();
             }
             else
             {
@@ -827,13 +938,9 @@ namespace Mrid6Helper
                     Thread.Sleep(600); ok = Mi.Set(Mi.M_KBMODE, (byte)hwMode);
                 }
                 if (ok && Mi.GetByte(Mi.M_KBMODE) != hwMode) { ok = false; Mi.LastError = "плата не приняла режим " + hwMode; }
-                if (ok && hwMode == 2) Mi.Set(Mi.M_KBCOLOR, _kbColor.R, _kbColor.G, _kbColor.B);     // вернуть выбранный цвет после радуги
-                if (ok && Mi.GetByte(Mi.M_KBBRIGHT) == 0)
-                {
-                    Mi.Set(Mi.M_KBBRIGHT, 3);
-                    bool l = _loading; _loading = true; tBright.Value = 3; _loading = l;
-                    note = " (яркость была 0 — поднята до 3)";
-                }
+                if (ok) _kbHwMode = hwMode;
+                if (ok && (_hwLvl <= 0 || _vb <= 0.5)) { ApplyBrightness(100, true); note = " (яркость была 0 — поднята до 100%)"; }
+                else if (ok) ApplyBrightness(_vb, false);     // вернуть выбранный цвет (с учётом яркости) после радуги
             }
             status.ForeColor = ok ? Color.MediumSeaGreen : Color.Tomato;
             status.Text = ok ? "Подсветка: " + cbKb.Items[index] + note : "Не удалось сменить режим подсветки: " + Mi.LastError;
@@ -846,10 +953,11 @@ namespace Mrid6Helper
                 if (d.ShowDialog(this) != DialogResult.OK) return;
                 StopRainbow(); _cfg.KbRainbow = false; _cfg.Save();
                 _kbColor = d.Color; bColor.BackColor = _kbColor; bColor.ForeColor = (_kbColor.R + _kbColor.G + _kbColor.B) > 380 ? Color.Black : Color.White;
-                Color cc = _kbColor;
+                _kbHwMode = 2; _cfg.KbColor = string.Format("{0:X2}{1:X2}{2:X2}", _kbColor.R, _kbColor.G, _kbColor.B); _cfg.Save();
+                if (_hwLvl <= 0 || _vb <= 0.5) ApplyBrightness(100, true);
+                Color cc = ScaleColor(_kbColor, _kbScale);
                 ThreadPool.QueueUserWorkItem(delegate { Mi.SetKbColor(cc.R, cc.G, cc.B); });   // пауза 500 мс между режимом и цветом — как у вендора
                 bool l = _loading; _loading = true; cbKb.SelectedIndex = 2; _loading = l;
-                if (Mi.GetByte(Mi.M_KBBRIGHT) == 0) { Mi.Set(Mi.M_KBBRIGHT, 3); tBright.Value = 3; }
             }
         }
 
@@ -885,7 +993,7 @@ namespace Mrid6Helper
         // ------------------------------------------------------------------ события Fn
         void OnFn(int name, int val, int type)
         {
-            Log.Write(string.Format("fn event: type={0} name={1} value={2}", type, name, val));
+            Log.Write(string.Format("fn event: type={0} name={1} value={2} t={3}", type, name, val, Environment.TickCount));
             try
             {
                 BeginInvoke((Action)delegate
@@ -902,11 +1010,12 @@ namespace Mrid6Helper
                             msg = "Режим: " + (val == 2 ? "Тихий" : val == 1 ? "Производительность" : "Баланс");
                             break;
                         case FnEvents.EV_KBBRIGHT:
-                            { bool l = _loading; _loading = true; tBright.Value = Cfg.Clamp(val, 0, 3); cbKb.SelectedIndex = KbIndex(Mi.GetByte(Mi.M_KBMODE), val); _loading = l; }
-                            msg = "Яркость подсветки: " + val; break;
+                            HandleFnBrightness(val);
+                            msg = "Яркость подсветки: " + (int)Math.Round(_vb) + " %"; break;
                         case FnEvents.EV_KBMODE:
                             if (_rainbow && unchecked(Environment.TickCount - _quiet) >= 0) { StopRainbow(); _cfg.KbRainbow = false; }
-                            { bool l = _loading; _loading = true; cbKb.SelectedIndex = KbIndex(val, tBright.Value); _loading = l; }
+                            _kbHwMode = val;
+                            { bool l = _loading; _loading = true; cbKb.SelectedIndex = KbIndex(val, _hwLvl); _loading = l; }
                             msg = "Подсветка: " + (val == 1 ? "радуга" : val == 2 ? "один цвет" : "режим " + val); break;
                         case FnEvents.EV_TOUCHPAD:
                             msg = "Тачпад: " + (val == 1 ? "включён" : "выключен"); break;
@@ -956,8 +1065,8 @@ namespace Mrid6Helper
                 // --- интерфейс и датчики
                 Chk("WMI-интерфейс платы отвечает", oMode >= 0, "mode=" + oMode);
                 Chk("слежение за Fn-событиями запущено (HID_EVENT20)", _fnStarted, "");
-                bool pw0 = true; UI(delegate { pw0 = cPower.Checked; });
-                Chk("по умолчанию «свои лимиты» выключены (авто)", !pw0, "");
+                bool cu0 = true; UI(delegate { cu0 = _custom; });
+                Chk("запуск: вне пользовательского режима плата в авто (свои лимиты не навязаны)", cu0 || Mi.GetByte(Mi.M_FANFIXSW) == 0, "custom=" + cu0);
                 string t0 = null, t1 = null, t2 = null, t3 = null, t4 = null;
                 UI(delegate { t0 = lCpu.Text; t1 = lGpu.Text; t2 = lFanC.Text; t3 = lFanG.Text; t4 = lCpuLoad.Text; });
                 Chk("датчик CPU", t0 != "—", t0); Chk("датчик GPU", t1 != "—", t1);
@@ -989,7 +1098,8 @@ namespace Mrid6Helper
 
                 Stage("переключатели");
                 // --- подсветка
-                for (int b = 3; b >= 0; b--) { int bb = b; UI(delegate { tBright.Value = bb; }); Thread.Sleep(350); Chk("яркость подсветки " + b, Mi.GetByte(Mi.M_KBBRIGHT) == b, "hw=" + Mi.GetByte(Mi.M_KBBRIGHT)); }
+                int[] vbs = { 100, 66, 33, 0 }, lvls = { 3, 2, 1, 0 };
+                for (int bi = 0; bi < 4; bi++) { int vv = vbs[bi]; UI(delegate { tBright.Value = vv; }); Thread.Sleep(350); Chk("яркость " + vv + " % → ступень платы " + lvls[bi], Mi.GetByte(Mi.M_KBBRIGHT) == lvls[bi], "hw=" + Mi.GetByte(Mi.M_KBBRIGHT)); }
                 UI(delegate { tBright.Value = 0; }); Thread.Sleep(350);
                 int kbi = -1; UI(delegate { kbi = cbKb.SelectedIndex; }); Chk("список подсветки показывает «Выкл» при яркости 0", kbi == 0, "index=" + kbi);
                 UI(delegate { cbKb.SelectedIndex = 3; }); Thread.Sleep(900);
@@ -1020,6 +1130,31 @@ namespace Mrid6Helper
                 Chk("цвет подсветки RGB(255,0,128)", r1 == 255 && g1 == 0 && b1 == 128, string.Format("hw={0},{1},{2}", r1, g1, b1));
                 Chk("  режим после записи цвета = «Один цвет»", Mi.GetByte(Mi.M_KBMODE) == 2, "");
 
+                // --- плавная яркость: промежуточные значения = ступень платы + масштаб цвета
+                UI(delegate { _kbColor = Color.FromArgb(200, 100, 50); cbKb.SelectedIndex = 2; tBright.Value = 100; }); Thread.Sleep(900);
+                UI(delegate { tBright.Value = 50; }); Thread.Sleep(900);
+                byte sr, sg, sb2; Mi.GetColor(out sr, out sg, out sb2);
+                Chk("плавная яркость: 50 % → ступень платы 2", Mi.GetByte(Mi.M_KBBRIGHT) == 2, "hw=" + Mi.GetByte(Mi.M_KBBRIGHT));
+                Chk("  цвет в регистре масштабирован на 75 % (≈150,75,38)", Math.Abs(sr - 150) <= 2 && Math.Abs(sg - 75) <= 2 && Math.Abs(sb2 - 38) <= 2, sr + "," + sg + "," + sb2);
+                UI(delegate { tBright.Value = 40; }); Thread.Sleep(700);
+                byte ur, ug, ub; Mi.GetColor(out ur, out ug, out ub);
+                Chk("  40 % — темнее при той же ступени платы", Mi.GetByte(Mi.M_KBBRIGHT) == 2 && ur < sr, "R " + sr + " → " + ur);
+                // имитация Fn: одиночное нажатие = ступень, удержание = плавный подъём
+                UI(delegate { tBright.Value = 20; }); Thread.Sleep(900);            // ступень 1
+                UI(delegate { HandleFnBrightness(2); }); Thread.Sleep(400);
+                double vTap = 0; UI(delegate { vTap = _vb; });
+                Chk("Fn одиночное нажатие = ступень платы (≈ 66,7 %)", Math.Abs(vTap - 66.67) < 1, "vb=" + Math.Round(vTap, 1));
+                Thread.Sleep(1200);
+                UI(delegate { tBright.Value = 20; }); Thread.Sleep(900);            // снова ступень 1
+                UI(delegate { HandleFnBrightness(2); }); Thread.Sleep(250);       // первое событие удержания → ступень
+                UI(delegate { HandleFnBrightness(3); }); Thread.Sleep(300);       // повтор подряд → плавный ход вверх
+                double v1 = 0, v2 = 0; bool rampOn = false; UI(delegate { v1 = _vb; rampOn = _ramping; });
+                Thread.Sleep(500); UI(delegate { v2 = _vb; });
+                Chk("Fn удержание: включился плавный ход (не ступени)", rampOn && Math.Abs(v2 - v1) > 5, "vb " + Math.Round(v1) + " → " + Math.Round(v2) + " %");
+                Thread.Sleep(1400);                                              // событий нет — клавишу отпустили
+                bool rampOff = true; double vEnd = 0; UI(delegate { rampOff = !_ramping; vEnd = _vb; });
+                Chk("  после отпускания ход останавливается", rampOff, "vb=" + Math.Round(vEnd) + " %");
+
                 Stage("подсветка");
                 // --- кривая вентиляторов: расчёты без железа
                 FanCurve cv = FanCurve.Preset(0);
@@ -1045,7 +1180,7 @@ namespace Mrid6Helper
                 UI(delegate { editor.Curve = FanCurve.Preset(0); _fc.Curve = editor.Curve.Clone(); });
 
                 // --- пользовательский режим на железе
-                UI(delegate { cbBase.SelectedIndex = 0; cbFan.SelectedIndex = 0; });
+                UI(delegate { cPower.Checked = false; cbBase.SelectedIndex = 0; cbFan.SelectedIndex = 0; });
                 UI(delegate { rCustom.Checked = true; }); Thread.Sleep(4500);
                 bool isCu = false; UI(delegate { isCu = _custom; });
                 Chk("кнопка «Свой»: пользовательский режим включился", isCu, "");
@@ -1105,11 +1240,11 @@ namespace Mrid6Helper
 
                 Stage("автозапуск/OSD");
                 // --- возврат исходного состояния
-                UI(delegate { StopRainbow(); cbKb.SelectedIndex = (oKb == 1 ? 3 : 2); }); Thread.Sleep(700);
+                UI(delegate { StopRainbow(); _kbColor = Color.FromArgb(r0, g0, b0); cbKb.SelectedIndex = (oKb == 1 ? 3 : 2); }); Thread.Sleep(700);
                 Mi.SetKbColor(r0, g0, b0);
                 for (int at = 0; at < 4 && Mi.GetByte(Mi.M_KBMODE) != (oKb >= 0 ? oKb : 2); at++) { Thread.Sleep(700); Mi.Set(Mi.M_KBMODE, (byte)(oKb >= 0 ? oKb : 2)); }
                 Mi.Set(Mi.M_FANFIX, (byte)(oPct > 0 ? oPct : 100));
-                UI(delegate { tBright.Value = Cfg.Clamp(oBr, 0, 3); });
+                UI(delegate { tBright.Value = Cfg.Clamp((int)Math.Round(oBr * 100.0 / 3.0), 0, 100); });
                 Thread.Sleep(400);
                 Info(string.Format("возвращено: kb={0} bright={1} rgb={2} mode={3} fanSw={4} fanPct={5}", Mi.GetByte(Mi.M_KBMODE), Mi.GetByte(Mi.M_KBBRIGHT), Mi.Hex(Cut3()), Mi.GetByte(Mi.M_PERF), Mi.GetByte(Mi.M_FANFIXSW), Mi.GetByte(Mi.M_FANFIX)));
             }
@@ -1183,8 +1318,10 @@ namespace Mrid6Helper
                 if (s.FnLock >= 0 && cFnLock.Checked != (s.FnLock == 1)) cFnLock.Checked = s.FnLock == 1;
                 if (s.Tp >= 0 && cTp.Checked != (s.Tp == 1)) cTp.Checked = s.Tp == 1;
                 if (s.Amb >= 0 && cAmb.Checked != (s.Amb == 1)) cAmb.Checked = s.Amb == 1;
-                if (s.KbBright >= 0 && s.KbBright <= 3 && tBright.Value != s.KbBright && !tBright.Capture) tBright.Value = s.KbBright;
-                if (s.KbMode >= 0 && s.KbBright >= 0 && !cbKb.DroppedDown) { int ki = KbIndex(s.KbMode, s.KbBright); if (cbKb.SelectedIndex != ki) cbKb.SelectedIndex = ki; }
+                if (!_ramping && !tBright.Capture && s.KbBright >= 0 && s.KbBright <= 3 && s.KbBright != _hwLvl)
+                { _hwLvl = s.KbBright; _vb = s.KbBright * 100.0 / 3.0; _kbScale = 1.0; tBright.Value = (int)Math.Round(_vb); }
+                if (s.KbMode >= 0) _kbHwMode = s.KbMode;
+                if (s.KbMode >= 0 && s.KbBright >= 0 && !cbKb.DroppedDown) { int ki = KbIndex(s.KbMode, _hwLvl); if (cbKb.SelectedIndex != ki) cbKb.SelectedIndex = ki; }
             }
             finally { _loading = l; }
         }

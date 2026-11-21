@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Management;
 using System.Text;
@@ -54,6 +55,7 @@ namespace Mrid6Helper
     /// <summary>Лабораторный режим: `--script in.txt out.txt`. Строки: G m | S m b0 b1.. | W ms | R (RPM+температуры).</summary>
     static class Lab
     {
+        static volatile bool burnStop;
         public static void Run(string inFile, string outFile)
         {
             StringBuilder sb = new StringBuilder();
@@ -75,6 +77,26 @@ namespace Mrid6Helper
                                 for (int i = 2; i < p.Length; i++) a[i - 2] = Convert.ToByte(p[i], 16);
                                 byte[] o = Mi.Call(Mi.SET, m, a);
                                 sb.AppendLine("S " + line.Substring(2) + " -> " + (o == null ? "FAIL " + Mi.LastError : "ok " + Mi.Hex(Cut(o, 8)))); break;
+                            }
+                        case "B":
+                            {   // нагрузка на все потоки N секунд + средняя частота CPU и максимум температуры
+                                int secs = int.Parse(p[1]); burnStop = false;
+                                for (int ti = 0; ti < Environment.ProcessorCount; ti++)
+                                    new Thread(delegate () { double x = 1; while (!burnStop) { for (int k = 0; k < 100000; k++) x = Math.Sqrt(x + k) + 1; } }) { IsBackground = true }.Start();
+                                System.Diagnostics.PerformanceCounter fq = null, pf = null;
+                                try { fq = new System.Diagnostics.PerformanceCounter("Processor Information", "Processor Frequency", "_Total"); pf = new System.Diagnostics.PerformanceCounter("Processor Information", "% Processor Performance", "_Total"); fq.NextValue(); pf.NextValue(); } catch { }
+                                List<float> fl = new List<float>(), pl = new List<float>(); int tmax = 0;
+                                for (int sec = 0; sec < secs; sec++)
+                                {
+                                    Thread.Sleep(1000);
+                                    if (fq != null) { try { fl.Add(fq.NextValue()); pl.Add(pf.NextValue()); } catch { } }
+                                    int ct = Mi.GetByte(Mi.M_CPUTEMP); if (ct > tmax) tmax = ct;
+                                }
+                                burnStop = true;
+                                int skip = Math.Min(4, fl.Count / 2); double sf = 0, sp = 0; int n = 0;
+                                for (int q = skip; q < fl.Count; q++) { sf += fl[q]; sp += pl[q]; n++; }
+                                sb.AppendLine(string.Format("B {0:HH:mm:ss} нагрузка {1} с: частота {2:0} МГц, производительность {3:0} %, cpuTmax={4}", DateTime.Now, secs, n > 0 ? sf / n : -1, n > 0 ? sp / n : -1, tmax));
+                                break;
                             }
                         case "W": Thread.Sleep(int.Parse(p[1])); break;
                         case "R":
@@ -137,6 +159,7 @@ namespace Mrid6Helper
                 Application.SetCompatibleTextRenderingDefault(false);
                 MainForm f = new MainForm();
                 f.StartHidden = Array.IndexOf(args, "--tray") >= 0;
+                if (Array.IndexOf(args, "--selftest") >= 0 || Array.IndexOf(args, "--shot") >= 0) { f.WindowState = FormWindowState.Minimized; f.ShowInTaskbar = false; }   // служебные прогоны не выскакивают на экран
                 int si = Array.IndexOf(args, "--shot"); if (si >= 0 && si + 1 < args.Length) f.ShotPath = args[si + 1];
                 int ti = Array.IndexOf(args, "--selftest"); if (ti >= 0 && ti + 1 < args.Length) f.SelfTestPath = args[ti + 1];
 
