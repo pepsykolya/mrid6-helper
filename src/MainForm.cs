@@ -243,7 +243,7 @@ namespace Mrid6Helper
         public MainForm()
         {
             Text = "MRID6 Helper " + System.Reflection.Assembly.GetExecutingAssembly().GetName().Version.ToString(3) + " — MECHREVO Jiaolong";
-            Icon = SystemIcons.Application;
+            try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { Icon = SystemIcons.Application; }   // дракон из ресурсов exe
             BackColor = Bg; ForeColor = Fg; Font = new Font("Segoe UI", 9f);
             AutoScaleMode = AutoScaleMode.Dpi;
             ClientSize = new Size(500, 760);
@@ -404,7 +404,7 @@ namespace Mrid6Helper
             Row(b6, Hint("Переключение режима GPU вступает в силу после перезагрузки."));
             Flat(cOsd); cOsd.Text = "Всплывающая подсказка при Fn-клавишах";
             Flat(cTrayClose); cTrayClose.Text = "Закрытие окна сворачивает в трей";
-            Flat(cAuto); cAuto.Text = "Запускать при входе в Windows (с правами администратора)";
+            Flat(cAuto); cAuto.Text = "Автозапуск и слежение (поднимать, если закрыто или упало)";
             cOsd.CheckedChanged += delegate { if (!_loading) { _cfg.Osd = cOsd.Checked; _cfg.Save(); } };
             cTrayClose.CheckedChanged += delegate { if (!_loading) { _cfg.CloseToTray = cTrayClose.Checked; _cfg.Save(); } };
             cAuto.CheckedChanged += delegate { if (!_loading) SetAutostart(cAuto.Checked); };
@@ -503,7 +503,7 @@ namespace Mrid6Helper
             m.Items.Add("Производительность", null, delegate { SetMode(1); SyncMode(1); });
             m.Items.Add("Пользовательский", null, delegate { rCustom.Checked = true; });
             m.Items.Add(new ToolStripSeparator());
-            m.Items.Add("Выход", null, delegate { _quit = true; Close(); });
+            m.Items.Add("Выход (не запускать до перезагрузки)", null, delegate { AutoStart.MarkExit(); _quit = true; Close(); });
             _tray.ContextMenuStrip = m;
             _tray.Visible = true;
             _tray.Text = "MRID6 Helper";
@@ -857,26 +857,12 @@ namespace Mrid6Helper
         }
 
         // ------------------------------------------------------------------ автозапуск
-        const string TaskName = "Mrid6Helper";
-        static bool AutostartExists()
-        {
-            try
-            {
-                ProcessStartInfo psi = new ProcessStartInfo("schtasks.exe", "/Query /TN " + TaskName) { CreateNoWindow = true, UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true };
-                using (Process p = Process.Start(psi)) { p.WaitForExit(4000); return p.ExitCode == 0; }
-            }
-            catch { return false; }
-        }
+        static bool AutostartExists() { return AutoStart.Exists(); }
         void SetAutostart(bool on)
         {
-            try
-            {
-                string exe = Application.ExecutablePath;
-                string args = on ? "/Create /TN " + TaskName + " /TR \"\\\"" + exe + "\\\" --tray\" /SC ONLOGON /RL HIGHEST /F" : "/Delete /TN " + TaskName + " /F";
-                ProcessStartInfo psi = new ProcessStartInfo("schtasks.exe", args) { CreateNoWindow = true, UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true };
-                using (Process p = Process.Start(psi)) { p.WaitForExit(8000); if (p.ExitCode != 0) status.Text = "Автозапуск: ошибка " + p.ExitCode; }
-            }
-            catch (Exception ex) { status.Text = "Автозапуск: " + ex.Message; }
+            string err = on ? AutoStart.Install(Application.ExecutablePath) : AutoStart.Remove();
+            if (err != null) { status.ForeColor = Color.Tomato; status.Text = "Автозапуск: " + err; }
+            else { status.ForeColor = Color.MediumSeaGreen; status.Text = on ? "Автозапуск включён: запуск при входе и контроль раз в минуту" : "Автозапуск выключен"; }
         }
 
         void RunDiag()
@@ -1100,6 +1086,10 @@ namespace Mrid6Helper
                 // --- автозапуск, OSD, трей
                 UI(delegate { cAuto.Checked = true; }); Thread.Sleep(1500);
                 Chk("автозапуск: создание задачи", AutostartExists(), "");
+                string tx = AutoStart.Xml();
+                Chk("  задача: работает от батареи и не гасится по таймеру", tx.Contains("<DisallowStartIfOnBatteries>false") && tx.Contains("<StopIfGoingOnBatteries>false") && tx.Contains("<ExecutionTimeLimit>PT0S"), "");
+                Chk("  задача: слежение (повтор раз в минуту, без второго экземпляра, перезапуск при сбое)", tx.Contains("<Interval>PT1M") && tx.Contains("IgnoreNew") && tx.Contains("RestartOnFailure"), "");
+                Chk("  задача: запуск с повышенными правами", tx.Contains("HighestAvailable"), "");
                 UI(delegate { cAuto.Checked = false; }); Thread.Sleep(1500);
                 Chk("автозапуск: удаление задачи", !AutostartExists(), "");
                 if (oAuto) { UI(delegate { cAuto.Checked = true; }); Thread.Sleep(1200); }

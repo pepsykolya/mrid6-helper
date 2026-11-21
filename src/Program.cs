@@ -102,6 +102,14 @@ namespace Mrid6Helper
         {
             for (int i = 0; i < args.Length; i++)
             {
+                if (args[i] == "--autostart" && i + 1 < args.Length)
+                {
+                    string e = args[i + 1] == "on" ? AutoStart.Install(Application.ExecutablePath) : AutoStart.Remove();
+                    File.WriteAllText(Path.Combine(Path.GetTempPath(), "mrid6-autostart.txt"), e ?? "ok", Encoding.UTF8);
+                    return e == null ? 0 : 1;
+                }
+                if (args[i] == "--mark-exit") { AutoStart.MarkExit(); return 0; }
+                if (args[i] == "--clear-exit") { AutoStart.ClearExitMark(); return 0; }
                 if (args[i] == "--script" && i + 2 < args.Length) { Lab.Run(args[i + 1], args[i + 2]); return 0; }
                 if (args[i] == "--probe")
                 {
@@ -110,6 +118,10 @@ namespace Mrid6Helper
                     return 0;
                 }
             }
+
+            bool watchdog = Array.IndexOf(args, "--watchdog") >= 0;
+            if (watchdog && AutoStart.ExitMarkedThisBoot()) return 0;   // пользователь закрыл программу умышленно — не воскрешаем до перезагрузки
+            if (!watchdog) AutoStart.ClearExitMark();                    // ручной запуск снимает запрет
 
             bool created;
             using (Mutex m = new Mutex(true, "Local\\Mrid6Helper.Single", out created))
