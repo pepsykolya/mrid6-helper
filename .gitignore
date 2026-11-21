@@ -1,0 +1,5 @@
+build/
+*.png
+*.log
+*.user
+.vs/
