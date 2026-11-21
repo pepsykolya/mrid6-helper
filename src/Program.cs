@@ -159,8 +159,8 @@ namespace Mrid6Helper
                 Application.SetCompatibleTextRenderingDefault(false);
                 MainForm f = new MainForm();
                 f.StartHidden = Array.IndexOf(args, "--tray") >= 0;
-                if (Array.IndexOf(args, "--selftest") >= 0 || Array.IndexOf(args, "--shot") >= 0) { f.WindowState = FormWindowState.Minimized; f.ShowInTaskbar = false; }   // служебные прогоны не выскакивают на экран
-                int si = Array.IndexOf(args, "--shot"); if (si >= 0 && si + 1 < args.Length) f.ShotPath = args[si + 1];
+                if (Array.IndexOf(args, "--selftest") >= 0) { f.WindowState = FormWindowState.Minimized; f.ShowInTaskbar = false; }   // служебные прогоны не выскакивают на экран
+                int si = Array.IndexOf(args, "--shot"); if (si >= 0 && si + 1 < args.Length) { f.ShotPath = args[si + 1]; int sd; if (si + 2 < args.Length && int.TryParse(args[si + 2], out sd)) f.ShotDelaySec = sd; }
                 int ti = Array.IndexOf(args, "--selftest"); if (ti >= 0 && ti + 1 < args.Length) f.SelfTestPath = args[ti + 1];
 
                 Thread w = new Thread(delegate ()

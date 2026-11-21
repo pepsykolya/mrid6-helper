@@ -252,6 +252,7 @@ namespace Mrid6Helper
         int _hwLvl = -1, _kbHwMode = 2;      // ступень и режим платы, как мы их знаем
         int _ownLevel = -1, _ownTick;        // последняя наша запись ступени (чтобы отличить своё событие от клавиши)
 
+        FlowLayoutPanel _flow;
         sealed class DoubleBufferedPanel : Panel { public DoubleBufferedPanel() { DoubleBuffered = true; ResizeRedraw = true; } }
 
         public MainForm()
@@ -292,7 +293,7 @@ namespace Mrid6Helper
             Controls.Add(scroll); Controls.Add(status);
 
             FlowLayoutPanel flow = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoSize = true, Dock = DockStyle.Top, BackColor = Bg };
-            scroll.Controls.Add(flow);
+            scroll.Controls.Add(flow); _flow = flow;
 
             // --- Датчики ---
             TableLayoutPanel b1; GroupBox g1 = Group("Датчики", out b1);
@@ -357,7 +358,7 @@ namespace Mrid6Helper
             Row(b3, tfx);
             lFanInfo.ForeColor = Dim; lFanInfo.AutoSize = true; lFanInfo.MaximumSize = new Size(GroupW - 40, 0); lFanInfo.Text = "Кривая работает в пользовательском режиме (кнопка «Свой»).";
             Row(b3, lFanInfo);
-            Flat(cPower); cPower.Text = "Свои лимиты питания (включают режим «Производительность»)";
+            Flat(cPower); cPower.Text = "Свои лимиты питания";
             Row(b3, cPower);
             TableLayoutPanel tpw = Grid(3, LabelW, 0, 52);
             Slider(tpw, "SPL, Вт", tSpl, vSpl, 50, 105);
@@ -374,7 +375,7 @@ namespace Mrid6Helper
                 if (_custom) ReapplyCustom(); else if (cPower.Checked) rCustom.Checked = true;
             };
             Row(b3, bApply);
-            Row(b3, Hint("Красная зона на графике — защитный пол: ниже него кривую опустить нельзя. Потолок оборотов зависит от базового режима: «Тихий» ≈ 3600, «Баланс» ≈ 5000, «Производительность» ≈ 5800 об/мин — на жаре выбирайте не «Тихий». Лимиты ниже штатных 95–105 Вт плата принимает (при SPL 60 / SPPT 70 нагрузка на CPU падает почти вдвое): чем ниже, тем тише и холоднее."));
+            Row(b3, Hint("Свои лимиты включают режим «Производительность». Красная зона на графике — защитный пол: ниже него кривую опустить нельзя. Потолок оборотов зависит от базового режима: «Тихий» ≈ 3600, «Баланс» ≈ 5000, «Производительность» ≈ 5800 об/мин — на жаре выбирайте не «Тихий». Лимиты ниже штатных 95–105 Вт плата принимает (при SPL 60 / SPPT 70 нагрузка на CPU падает почти вдвое): чем ниже, тем тише и холоднее."));
             Fit(g3, b3, 40); flow.Controls.Add(g3);
 
             // --- Клавиатура ---
@@ -421,7 +422,7 @@ namespace Mrid6Helper
             Row(b6, Hint("Переключение режима GPU вступает в силу после перезагрузки."));
             Flat(cOsd); cOsd.Text = "Всплывающая подсказка при Fn-клавишах";
             Flat(cTrayClose); cTrayClose.Text = "Закрытие окна сворачивает в трей";
-            Flat(cAuto); cAuto.Text = "Автозапуск и слежение (поднимать, если закрыто или упало)";
+            Flat(cAuto); cAuto.Text = "Автозапуск и слежение за работой";
             cOsd.CheckedChanged += delegate { if (!_loading) { _cfg.Osd = cOsd.Checked; _cfg.Save(); } };
             cTrayClose.CheckedChanged += delegate { if (!_loading) { _cfg.CloseToTray = cTrayClose.Checked; _cfg.Save(); } };
             cAuto.CheckedChanged += delegate { if (!_loading) SetAutostart(cAuto.Checked); };
@@ -542,19 +543,23 @@ namespace Mrid6Helper
             FitAll();
             if (SelfTestPath != null) { _selfTest = true; _cfg.NoSave = true; new Thread(RunSelfTest) { IsBackground = true, Name = "selftest" }.Start(); return; }
             if (ShotPath == null) return;
-            System.Windows.Forms.Timer t = new System.Windows.Forms.Timer { Interval = 4000 };
+            System.Windows.Forms.Timer t = new System.Windows.Forms.Timer { Interval = Math.Max(1, ShotDelaySec) * 1000 };
             t.Tick += delegate
             {
                 t.Stop();
                 try
                 {
-                    ClientSize = new Size(ClientSize.Width, 1560);
                     Application.DoEvents();
-                    using (Bitmap bmp = new Bitmap(Width, Height))
+                    // панель групп имеет полную высоту (окно ограничено экраном) — рисуем её целиком; границы групп пишем рядом (для нарезки)
+                    using (Bitmap bmp = new Bitmap(_flow.Width + 20, _flow.Height + 20))
                     {
-                        DrawToBitmap(bmp, new Rectangle(0, 0, Width, Height));
+                        using (Graphics g = Graphics.FromImage(bmp)) g.Clear(Bg);
+                        _flow.DrawToBitmap(bmp, new Rectangle(10, 10, _flow.Width, _flow.Height));
                         bmp.Save(ShotPath, System.Drawing.Imaging.ImageFormat.Png);
                     }
+                    StringBuilder gb = new StringBuilder();
+                    foreach (GroupBox gx in _fitG) gb.AppendLine(gx.Text + "|" + (gx.Top + 10) + "|" + gx.Height);
+                    File.WriteAllText(ShotPath + ".txt", gb.ToString(), Encoding.UTF8);
                 }
                 catch (Exception ex) { Log.Write("shot: " + ex.Message); }
                 _quit = true; Close();
@@ -581,7 +586,8 @@ namespace Mrid6Helper
         public bool StartHidden;
         public string SelfTestPath;             // служебное: самотест (--selftest файл)
         bool _fnStarted;
-        public string ShotPath;                 // служебное: сохранить снимок окна и выйти (--shot файл)
+        public string ShotPath;
+        public int ShotDelaySec = 4;            // через сколько секунд после показа снимать (чтобы график успел наполниться)                 // служебное: сохранить снимок окна и выйти (--shot файл)
         bool _firstShow = true;
         protected override void SetVisibleCore(bool value)
         {
@@ -667,7 +673,8 @@ namespace Mrid6Helper
                 tSpl.Value = _cfg.Spl; tSppt.Value = _cfg.Sppt; tWall.Value = _cfg.Wall; cPower.Checked = _cfg.CustomPower;
                 cbBase.SelectedIndex = _cfg.CustomBase; cbFan.SelectedIndex = _cfg.FanKind; tFan.Value = _cfg.FanPct; tSmooth.Value = _cfg.CurveSmooth;
                 FanCurve fc0 = FanCurve.Parse(_cfg.Curve) ?? FanCurve.Preset(0);
-                editor.Curve = fc0; _fc.Curve = fc0.Clone(); _fc.Smooth = _cfg.CurveSmooth; cbPreset.SelectedIndex = -1;
+                editor.Curve = fc0; _fc.Curve = fc0.Clone(); _fc.Smooth = _cfg.CurveSmooth;
+                { int pi = -1; for (int q = 0; q < FanCurve.PresetNames.Length; q++) if (FanCurve.Preset(q).Serialize() == fc0.Serialize()) pi = q; cbPreset.SelectedIndex = pi; }
                 cOsd.Checked = _cfg.Osd; cTrayClose.Checked = _cfg.CloseToTray; cAuto.Checked = AutostartExists();
             }
             finally { _loading = false; }
@@ -1371,7 +1378,7 @@ namespace Mrid6Helper
         {
             if (!_quit && _cfg.CloseToTray && e.CloseReason == CloseReason.UserClosing) { e.Cancel = true; Hide(); return; }
             _quit = true; _rbOn = false;
-            try { if (_custom) Mi.Set(Mi.M_FANFIXSW, 0); } catch { }   // вернуть вентиляторы автоматике платы при выходе
+            try { if (_custom) { Mi.Set(Mi.M_FANFIXSW, 0); if (cPower.Checked) Mi.SetCustomPower(false, 0, 0, 0); } } catch { }   // при выходе вернуть вентиляторы автоматике платы и закрыть свои лимиты
             try { SystemEvents.PowerModeChanged -= OnPower; } catch { }
             try { _fn.Dispose(); } catch { }
             try { _tray.Visible = false; _tray.Dispose(); } catch { }
