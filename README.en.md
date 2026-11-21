@@ -4,11 +4,11 @@
 
 <p align="center"><b>A tiny G-Helper alternative for MECHREVO Jiaolong (MRID6) laptops</b><br>
 performance modes · smooth fan curve · CPU power limits · keyboard lighting · temperatures and fan RPM<br>
-a single ≈115 KB executable, no installer, no dependencies</p>
+a single ≈130 KB executable, no installer, no dependencies</p>
 
-<p align="center"><a href="README.md">Русский</a> · <a href="docs/PROTOCOL.md">Board protocol (RU)</a> · <a href="../../releases/latest">Download</a></p>
+<p align="center"><a href="README.md">Русский</a> · <a href="README.zh-CN.md">中文</a> · <a href="docs/PROTOCOL.md">Board protocol (RU)</a> · <a href="../../releases/latest">Download</a></p>
 
-<p align="center"><img src="docs/screenshots/hero.png" alt="MRID6 Helper window"></p>
+<p align="center"><img src="docs/screenshots/hero-en.png" alt="MRID6 Helper window"></p>
 
 G-Helper targets ASUS ROG laptops. On a MECHREVO Jiaolong it only half works, shows no temperatures or fan speeds, and — while running —
 keeps resetting the performance mode to "Balanced". **MRID6 Helper** talks to this laptop's own platform interface (Bitland ACPI/WMI) and does
@@ -32,6 +32,7 @@ what neither G-Helper nor the stock "蛟龙游戏控制中心" can.
 * **GPU mode** Hybrid / Discrete-only (MUX), effective after a reboot.
 * **Autostart with a watchdog**: a scheduled task starts the app at logon and **checks every minute that it is alive**; works on battery,
   elevated without a UAC prompt. The tray's "Exit (do not restart until reboot)" is a deliberate exit.
+* **Three UI languages**: Russian, English, 中文 (Simplified) — detected from the Windows language, switchable in the System section (applied after a restart; the app offers to restart itself).
 * Desktop shortcut without the UAC shield (`tools/make-shortcut.ps1`), full-height window by default, a built-in on-hardware self-test.
 
 ## Install

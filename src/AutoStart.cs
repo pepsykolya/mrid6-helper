@@ -42,7 +42,7 @@ namespace Mrid6Helper
             return
 "<?xml version=\"1.0\" encoding=\"UTF-16\"?>\r\n" +
 "<Task version=\"1.2\" xmlns=\"http://schemas.microsoft.com/windows/2004/02/mit/task\">\r\n" +
-"  <RegistrationInfo><Description>MRID6 Helper: запуск при входе и контроль (раз в минуту поднимает приложение, если оно не запущено)</Description></RegistrationInfo>\r\n" +
+"  <RegistrationInfo><Description>MRID6 Helper: autostart and watchdog (starts the app at logon and every minute if it is not running)</Description></RegistrationInfo>\r\n" +
 "  <Triggers>\r\n" +
 "    <LogonTrigger>\r\n" +
 "      <Enabled>true</Enabled>\r\n" +
@@ -81,7 +81,7 @@ namespace Mrid6Helper
             {
                 File.WriteAllText(tmp, BuildXml(exe), Encoding.Unicode);
                 int c; string o = Run("/Create /TN " + TaskName + " /XML \"" + tmp + "\" /F", out c);
-                return c == 0 ? null : "код " + c + ": " + o.Trim();
+                return c == 0 ? null : "code " + c + ": " + o.Trim();
             }
             catch (Exception ex) { return ex.Message; }
             finally { try { File.Delete(tmp); } catch { } }
@@ -90,7 +90,7 @@ namespace Mrid6Helper
         public static string Remove()
         {
             int c; string o = Run("/Delete /TN " + TaskName + " /F", out c);
-            return c == 0 || !Exists() ? null : "код " + c + ": " + o.Trim();
+            return c == 0 || !Exists() ? null : "code " + c + ": " + o.Trim();
         }
 
         // ---- задача «Открыть» (по требованию): ярлык запускает её через schtasks, поэтому на ярлыке нет щита UAC и нет запроса прав.
@@ -104,7 +104,7 @@ namespace Mrid6Helper
             string xml =
 "<?xml version=\"1.0\" encoding=\"UTF-16\"?>\r\n" +
 "<Task version=\"1.2\" xmlns=\"http://schemas.microsoft.com/windows/2004/02/mit/task\">\r\n" +
-"  <RegistrationInfo><Description>MRID6 Helper: открыть окно (запуск по требованию с повышенными правами, без запроса UAC)</Description></RegistrationInfo>\r\n" +
+"  <RegistrationInfo><Description>MRID6 Helper: open the window (on-demand elevated start without a UAC prompt)</Description></RegistrationInfo>\r\n" +
 "  <Principals><Principal id=\"Author\"><UserId>" + SecurityElement.Escape(user) + "</UserId><LogonType>InteractiveToken</LogonType><RunLevel>HighestAvailable</RunLevel></Principal></Principals>\r\n" +
 "  <Settings>\r\n" +
 "    <MultipleInstancesPolicy>Parallel</MultipleInstancesPolicy>\r\n" +
@@ -123,7 +123,7 @@ namespace Mrid6Helper
             {
                 File.WriteAllText(tmp, xml, Encoding.Unicode);
                 int c; string o = Run("/Create /TN " + OpenTaskName + " /XML \"" + tmp + "\" /F", out c);
-                return c == 0 ? null : "код " + c + ": " + o.Trim();
+                return c == 0 ? null : "code " + c + ": " + o.Trim();
             }
             catch (Exception ex) { return ex.Message; }
             finally { try { File.Delete(tmp); } catch { } }

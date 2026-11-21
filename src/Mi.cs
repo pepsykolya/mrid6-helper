@@ -63,7 +63,7 @@ namespace Mrid6Helper
                     foreach (ManagementObject o in s.Get()) { _obj = o; return _obj; }
             }
             catch (Exception ex) { last = ex; }
-            throw last ?? new InvalidOperationException("MICommonInterface не найден");
+            throw last ?? new InvalidOperationException("MICommonInterface not found");
         }
 
         /// <summary>Сырой вызов. Возвращает OutData или null.</summary>

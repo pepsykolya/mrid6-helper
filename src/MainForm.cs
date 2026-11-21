@@ -26,6 +26,7 @@ namespace Mrid6Helper
         public int CustomBase = 2;             // базовый режим платы: индекс списка 0 баланс, 1 тихий, 2 производительность (по умолчанию «Производительность»)
         public int KbVb = -1;                  // яркость подсветки, % (плавная); -1 — не задана
         public string KbColor = "";            // выбранный цвет подсветки RRGGBB (полная яркость)
+        public string Lang = "auto";           // язык интерфейса: auto | ru | en | zh
         public int SettingsVer;                // 2 — профиль «Свой» по умолчанию: Производительность + сниженные лимиты
         public int FanKind;                    // 0 кривая, 1 автоматика платы, 2 фиксированные обороты
         public int CurveSmooth = 5;            // плавность кривой 1..10
@@ -53,6 +54,7 @@ namespace Mrid6Helper
                     {
                         case "KbRainbow": c.KbRainbow = b; break;
                         case "SettingsVer": if (int.TryParse(v, out n)) c.SettingsVer = n; break;
+                        case "Lang": c.Lang = v; break;
                         case "KbVb": if (int.TryParse(v, out n)) c.KbVb = n; break;
                         case "KbColor": c.KbColor = v; break;
                         case "Spl": if (int.TryParse(v, out n)) c.Spl = n; break;
@@ -82,7 +84,7 @@ namespace Mrid6Helper
             if (NoSave) return;
             try
             {
-                List<string> lines = new List<string> { "SettingsVer=2", "KbRainbow=" + (KbRainbow ? 1 : 0), "Spl=" + Spl, "Sppt=" + Sppt, "Wall=" + Wall,
+                List<string> lines = new List<string> { "SettingsVer=2", "Lang=" + Lang, "KbRainbow=" + (KbRainbow ? 1 : 0), "Spl=" + Spl, "Sppt=" + Sppt, "Wall=" + Wall,
                     "Osd=" + (Osd ? 1 : 0), "CloseToTray=" + (CloseToTray ? 1 : 0), "FanPct=" + FanPct, "CustomLimits=" + (CustomPower ? 1 : 0),
                     "CustomActive=" + (CustomActive ? 1 : 0), "CustomBase=" + CustomBase, "FanKind=" + FanKind, "CurveSmooth=" + CurveSmooth };
                 if (!string.IsNullOrEmpty(Curve)) lines.Add("Curve=" + Curve);
@@ -242,7 +244,7 @@ namespace Mrid6Helper
         readonly Button bColor = new Button();
         readonly CheckBox cFnLock = new ToggleBox(), cTp = new ToggleBox(), cAmb = new ToggleBox();
         // система
-        readonly ComboBox cbGpu = new ComboBox();
+        readonly ComboBox cbGpu = new ComboBox(), cbLang = new ComboBox();
         readonly CheckBox cOsd = new ToggleBox(), cTrayClose = new ToggleBox(), cAuto = new ToggleBox();
         readonly Label status = new Label();
         Color _kbColor = Color.White;
@@ -267,6 +269,7 @@ namespace Mrid6Helper
 
             try { _cpuLoad = new PerformanceCounter("Processor", "% Processor Time", "_Total"); _cpuLoad.NextValue(); } catch { }
 
+            L.Init(Program.LangOverride ?? _cfg.Lang);
             BuildUi();
             BuildTray();
             Nvml.Init();
@@ -296,21 +299,21 @@ namespace Mrid6Helper
             scroll.Controls.Add(flow); _flow = flow;
 
             // --- Датчики ---
-            TableLayoutPanel b1; GroupBox g1 = Group("Датчики", out b1);
-            TableLayoutPanel t1 = Grid(4, 128, 88, 128, 0);
+            TableLayoutPanel b1; GroupBox g1 = Group(L.T("Датчики"), out b1);
+            TableLayoutPanel t1 = Grid(4, 112, 84, 112, 0);
             KV(t1, "CPU", lCpu, "GPU", lGpu);
-            KV(t1, "Кулер CPU, об/мин", lFanC, "Кулер GPU, об/мин", lFanG);
-            KV(t1, "Загрузка CPU", lCpuLoad, "Загрузка GPU", lGpuUtil);
-            KV(t1, "GPU мощность", lGpuW, "GPU частота", lGpuClk);
+            KV(t1, L.T("Кулер CPU, об/мин"), lFanC, L.T("Кулер GPU, об/мин"), lFanG);
+            KV(t1, L.T("Загрузка CPU"), lCpuLoad, L.T("Загрузка GPU"), lGpuUtil);
+            KV(t1, L.T("GPU мощность"), lGpuW, L.T("GPU частота"), lGpuClk);
             Row(b1, t1);
             chart.Height = 96; chart.MinimumSize = new Size(0, 96); chart.BackColor = Panel2; chart.Paint += PaintChart;
             Row(b1, chart);
             Fit(g1, b1, 22); flow.Controls.Add(g1);
 
             // --- Режим ---
-            TableLayoutPanel b2; GroupBox g2 = Group("Режим производительности  (Fn+F10)", out b2);
+            TableLayoutPanel b2; GroupBox g2 = Group(L.T("Режим производительности  (Fn+F10)"), out b2);
             TableLayoutPanel t2 = Grid(4, 0, 0, 0, 0);
-            StyleMode(rQuiet, "Тихий"); StyleMode(rBal, "Баланс"); StyleMode(rPerf, "Игровой"); StyleMode(rCustom, "Свой");
+            StyleMode(rQuiet, L.T("Тихий")); StyleMode(rBal, L.T("Баланс")); StyleMode(rPerf, L.T("Игровой")); StyleMode(rCustom, L.T("Свой"));
             t2.RowCount = 1; t2.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             t2.Controls.Add(rQuiet, 0, 0); t2.Controls.Add(rBal, 1, 0); t2.Controls.Add(rPerf, 2, 0); t2.Controls.Add(rCustom, 3, 0);
             rQuiet.CheckedChanged += delegate { if (rQuiet.Checked) SetMode(2); };
@@ -318,18 +321,18 @@ namespace Mrid6Helper
             rPerf.CheckedChanged += delegate { if (rPerf.Checked) SetMode(1); };
             rCustom.CheckedChanged += delegate { if (rCustom.Checked) SetCustom(); };
             Row(b2, t2);
-            Row(b2, Hint("«Игровой» — режим платы «Производительность». «Свой» — пользовательский: плавная кривая вентиляторов и, по желанию, свои лимиты питания (настройки ниже)."));
+            Row(b2, Hint(L.T("«Игровой» — режим платы «Производительность». «Свой» — пользовательский: плавная кривая вентиляторов и, по желанию, свои лимиты питания (настройки ниже).")));
             Fit(g2, b2, 8); flow.Controls.Add(g2);
 
             // --- Пользовательский режим ---
-            TableLayoutPanel b3; GroupBox g3 = Group("Пользовательский режим", out b3);
+            TableLayoutPanel b3; GroupBox g3 = Group(L.T("Пользовательский режим"), out b3);
             TableLayoutPanel tcb = Grid(2, LabelW, 0);
-            StyleCombo(cbBase); cbBase.Items.AddRange(new object[] { "Баланс", "Тихий", "Производительность" });
+            StyleCombo(cbBase); cbBase.Items.AddRange(new object[] { L.T("Баланс"), L.T("Тихий"), L.T("Производительность") });
             cbBase.SelectedIndexChanged += delegate { if (_loading) return; _cfg.CustomBase = cbBase.SelectedIndex; _cfg.Save(); if (_custom) ReapplyCustom(); };
-            Pair(tcb, "Базовый режим", cbBase);
-            StyleCombo(cbFan); cbFan.Items.AddRange(new object[] { "Кривая (плавная)", "Автоматика платы", "Фиксированные обороты" });
+            Pair(tcb, L.T("Базовый режим"), cbBase);
+            StyleCombo(cbFan); cbFan.Items.AddRange(new object[] { L.T("Кривая (плавная)"), L.T("Автоматика платы"), L.T("Фиксированные обороты") });
             cbFan.SelectedIndexChanged += delegate { if (_loading) return; _cfg.FanKind = cbFan.SelectedIndex; _cfg.FanPct = tFan.Value; _cfg.Save(); if (_custom) RestartFan(); };
-            Pair(tcb, "Вентиляторы", cbFan);
+            Pair(tcb, L.T("Вентиляторы"), cbFan);
             Row(b3, tcb);
             editor.Height = 190; Row(b3, editor);
             editor.Changed += delegate
@@ -338,35 +341,35 @@ namespace Mrid6Helper
                 bool l = _loading; _loading = true; cbPreset.SelectedIndex = -1; _loading = l;
             };
             TableLayoutPanel tpr = Grid(2, LabelW, 0);
-            StyleCombo(cbPreset); cbPreset.Items.AddRange(FanCurve.PresetNames);
+            StyleCombo(cbPreset); foreach (string pn in FanCurve.PresetNames) cbPreset.Items.Add(L.T(pn));
             cbPreset.SelectedIndexChanged += delegate
             {
                 if (_loading || cbPreset.SelectedIndex < 0) return;
                 editor.Curve = FanCurve.Preset(cbPreset.SelectedIndex); editor.Invalidate();
                 _fc.Curve = editor.Curve.Clone(); _cfg.Curve = editor.Curve.Serialize(); _cfg.Save();
             };
-            Pair(tpr, "Шаблон кривой", cbPreset);
+            Pair(tpr, L.T("Шаблон кривой"), cbPreset);
             Row(b3, tpr);
             TableLayoutPanel tsm = Grid(3, LabelW, 0, 52);
-            Slider(tsm, "Плавность, 1–10", tSmooth, vSmooth, 1, 10);
+            Slider(tsm, L.T("Плавность, 1–10"), tSmooth, vSmooth, 1, 10);
             tSmooth.ValueChanged += delegate { _fc.Smooth = tSmooth.Value; if (!_loading) { _cfg.CurveSmooth = tSmooth.Value; _cfg.Save(); } };
             Row(b3, tsm);
             TableLayoutPanel tfx = Grid(3, LabelW, 0, 52);
-            Slider(tfx, "Фикс. обороты, %", tFan, vFan, 30, 100);
+            Slider(tfx, L.T("Фикс. обороты, %"), tFan, vFan, 30, 100);
             tFan.MouseUp += delegate { if (_loading) return; _cfg.FanPct = tFan.Value; _cfg.Save(); if (_custom && cbFan.SelectedIndex == 2) RestartFan(); };
             tFan.KeyUp += delegate { if (_loading) return; _cfg.FanPct = tFan.Value; _cfg.Save(); if (_custom && cbFan.SelectedIndex == 2) RestartFan(); };
             Row(b3, tfx);
-            lFanInfo.ForeColor = Dim; lFanInfo.AutoSize = true; lFanInfo.MaximumSize = new Size(GroupW - 40, 0); lFanInfo.Text = "Кривая работает в пользовательском режиме (кнопка «Свой»).";
+            lFanInfo.ForeColor = Dim; lFanInfo.AutoSize = true; lFanInfo.MaximumSize = new Size(GroupW - 40, 0); lFanInfo.Text = L.T("Кривая работает в пользовательском режиме (кнопка «Свой»).");
             Row(b3, lFanInfo);
-            Flat(cPower); cPower.Text = "Свои лимиты питания";
+            Flat(cPower); cPower.Text = L.T("Свои лимиты питания");
             Row(b3, cPower);
             TableLayoutPanel tpw = Grid(3, LabelW, 0, 52);
-            Slider(tpw, "SPL, Вт", tSpl, vSpl, 50, 105);
-            Slider(tpw, "SPPT, Вт", tSppt, vSppt, 60, 120);
-            Slider(tpw, "Температурная стенка, °C", tWall, vWall, 80, 100);
+            Slider(tpw, L.T("SPL, Вт"), tSpl, vSpl, 50, 105);
+            Slider(tpw, L.T("SPPT, Вт"), tSppt, vSppt, 60, 120);
+            Slider(tpw, L.T("Температурная стенка, °C"), tWall, vWall, 80, 100);
             tSpl.ValueChanged += delegate { if (tSppt.Value < tSpl.Value + 5) tSppt.Value = Math.Min(tSppt.Maximum, tSpl.Value + 5); };   // SPPT не ниже SPL
             Row(b3, tpw);
-            Button bApply = new Button { Text = "Применить лимиты", Height = 32 }; StyleBtn(bApply);
+            Button bApply = new Button { Text = L.T("Применить лимиты"), Height = 32 }; StyleBtn(bApply);
             bApply.Click += delegate { if (!_custom) rCustom.Checked = true; else ReapplyCustom(); };
             cPower.CheckedChanged += delegate
             {
@@ -375,16 +378,16 @@ namespace Mrid6Helper
                 if (_custom) ReapplyCustom(); else if (cPower.Checked) rCustom.Checked = true;
             };
             Row(b3, bApply);
-            Row(b3, Hint("Свои лимиты включают режим «Производительность». Красная зона на графике — защитный пол: ниже него кривую опустить нельзя. Потолок оборотов зависит от базового режима: «Тихий» ≈ 3600, «Баланс» ≈ 5000, «Производительность» ≈ 5800 об/мин — на жаре выбирайте не «Тихий». Лимиты ниже штатных 95–105 Вт плата принимает (при SPL 60 / SPPT 70 нагрузка на CPU падает почти вдвое): чем ниже, тем тише и холоднее."));
+            Row(b3, Hint(L.T("Свои лимиты включают режим «Производительность». Красная зона на графике — защитный пол: ниже него кривую опустить нельзя. Потолок оборотов зависит от базового режима: «Тихий» ≈ 3600, «Баланс» ≈ 5000, «Производительность» ≈ 5800 об/мин — на жаре выбирайте не «Тихий». Лимиты ниже штатных 95–105 Вт плата принимает (при SPL 60 / SPPT 70 нагрузка на CPU падает почти вдвое): чем ниже, тем тише и холоднее.")));
             Fit(g3, b3, 40); flow.Controls.Add(g3);
 
             // --- Клавиатура ---
-            TableLayoutPanel b5; GroupBox g5 = Group("Клавиатура и светодиоды  (Fn+F9)", out b5);
+            TableLayoutPanel b5; GroupBox g5 = Group(L.T("Клавиатура и светодиоды  (Fn+F9)"), out b5);
             TableLayoutPanel t5 = Grid(2, LabelW, 0);
             cbKb.DropDownStyle = ComboBoxStyle.DropDownList; cbKb.FlatStyle = FlatStyle.Flat; cbKb.BackColor = Panel2; cbKb.ForeColor = Fg;
-            cbKb.Items.AddRange(new object[] { "Выкл (яркость 0)", "Радуга (плавная)", "Один цвет", "Авто-режим платы" });
+            cbKb.Items.AddRange(new object[] { L.T("Выкл (яркость 0)"), L.T("Радуга (плавная)"), L.T("Один цвет"), L.T("Авто-режим платы") });
             cbKb.SelectedIndexChanged += delegate { if (!_loading && cbKb.SelectedIndex >= 0) SetKbMode(cbKb.SelectedIndex); };
-            Pair(t5, "Режим подсветки", cbKb);
+            Pair(t5, L.T("Режим подсветки"), cbKb);
             tBright.Minimum = 0; tBright.Maximum = 100; tBright.TickFrequency = 10; tBright.SmallChange = 2; tBright.LargeChange = 10; tBright.AutoSize = false; tBright.Height = 34; tBright.BackColor = Bg;
             tBright.ValueChanged += delegate
             {
@@ -394,14 +397,14 @@ namespace Mrid6Helper
             };
             tBright.MouseUp += delegate { if (!_loading) { _cfg.KbVb = (int)Math.Round(_vb); _cfg.Save(); } };
             tBright.KeyUp += delegate { if (!_loading) { _cfg.KbVb = (int)Math.Round(_vb); _cfg.Save(); } };
-            Pair(t5, "Яркость, % (плавно)", tBright);
-            bColor.Text = "Выбрать цвет…"; StyleBtn(bColor); bColor.Height = 30;
+            Pair(t5, L.T("Яркость, % (плавно)"), tBright);
+            bColor.Text = L.T("Выбрать цвет…"); StyleBtn(bColor); bColor.Height = 30;
             bColor.Click += delegate { PickColor(); };
-            Pair(t5, "Цвет", bColor);
+            Pair(t5, L.T("Цвет"), bColor);
             Row(b5, t5);
-            Flat(cFnLock); cFnLock.Text = "Fn-lock (мультимедиа-ряд без Fn)";
-            Flat(cTp); cTp.Text = "Блокировка тачпада";
-            Flat(cAmb); cAmb.Text = "Подсветка по периметру (Ambient)";
+            Flat(cFnLock); cFnLock.Text = L.T("Fn-lock (мультимедиа-ряд без Fn)");
+            Flat(cTp); cTp.Text = L.T("Блокировка тачпада");
+            Flat(cAmb); cAmb.Text = L.T("Подсветка по периметру (Ambient)");
             cFnLock.CheckedChanged += delegate { if (!_loading) { Touch(); Mi.Set(Mi.M_FNLOCK, (byte)(cFnLock.Checked ? 1 : 0)); } };
             cTp.CheckedChanged += delegate { if (!_loading) { Touch(); Mi.Set(Mi.M_TPLOCK, (byte)(cTp.Checked ? 1 : 0)); } };
             cAmb.CheckedChanged += delegate { if (!_loading) { Touch(); Mi.Set(Mi.M_AMBIENT, (byte)(cAmb.Checked ? 1 : 0)); } };
@@ -409,25 +412,30 @@ namespace Mrid6Helper
             Fit(g5, b5, 6); flow.Controls.Add(g5);
 
             // --- Система ---
-            TableLayoutPanel b6; GroupBox g6 = Group("Система", out b6);
+            TableLayoutPanel b6; GroupBox g6 = Group(L.T("Система"), out b6);
             TableLayoutPanel t6 = Grid(3, 110, 0, 120);
             cbGpu.DropDownStyle = ComboBoxStyle.DropDownList; cbGpu.FlatStyle = FlatStyle.Flat; cbGpu.BackColor = Panel2; cbGpu.ForeColor = Fg;
-            cbGpu.Items.AddRange(new object[] { "Гибридный", "Только дискретная" });
-            Button bGpu = new Button { Text = "Применить", Height = 28 }; StyleBtn(bGpu); bGpu.Click += delegate { ApplyGpuMode(); };
+            cbGpu.Items.AddRange(new object[] { L.T("Гибридный"), L.T("Только дискретная") });
+            Button bGpu = new Button { Text = L.T("Применить"), Height = 28 }; StyleBtn(bGpu); bGpu.Click += delegate { ApplyGpuMode(); };
             t6.RowCount = 1; t6.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            t6.Controls.Add(Lbl("Режим GPU"), 0, 0);
+            t6.Controls.Add(Lbl(L.T("Режим GPU")), 0, 0);
             cbGpu.Dock = DockStyle.Fill; cbGpu.Margin = new Padding(3, 4, 3, 4); bGpu.Dock = DockStyle.Fill;
             t6.Controls.Add(cbGpu, 1, 0); t6.Controls.Add(bGpu, 2, 0);
             Row(b6, t6);
-            Row(b6, Hint("Переключение режима GPU вступает в силу после перезагрузки."));
-            Flat(cOsd); cOsd.Text = "Всплывающая подсказка при Fn-клавишах";
-            Flat(cTrayClose); cTrayClose.Text = "Закрытие окна сворачивает в трей";
-            Flat(cAuto); cAuto.Text = "Автозапуск и слежение за работой";
+            Row(b6, Hint(L.T("Переключение режима GPU вступает в силу после перезагрузки.")));
+            TableLayoutPanel tlg = Grid(2, LabelW, 0);
+            StyleCombo(cbLang); cbLang.Items.AddRange(new object[] { "Авто / Auto / 自动", "Русский", "English", "中文(简体)" });
+            cbLang.SelectedIndexChanged += delegate { if (!_loading && cbLang.SelectedIndex >= 0) ChangeLanguage(); };
+            Pair(tlg, "Язык / Language / 语言", cbLang);
+            Row(b6, tlg);
+            Flat(cOsd); cOsd.Text = L.T("Всплывающая подсказка при Fn-клавишах");
+            Flat(cTrayClose); cTrayClose.Text = L.T("Закрытие окна сворачивает в трей");
+            Flat(cAuto); cAuto.Text = L.T("Автозапуск и слежение за работой");
             cOsd.CheckedChanged += delegate { if (!_loading) { _cfg.Osd = cOsd.Checked; _cfg.Save(); } };
             cTrayClose.CheckedChanged += delegate { if (!_loading) { _cfg.CloseToTray = cTrayClose.Checked; _cfg.Save(); } };
             cAuto.CheckedChanged += delegate { if (!_loading) SetAutostart(cAuto.Checked); };
             Row(b6, cOsd); Row(b6, cTrayClose); Row(b6, cAuto);
-            Button bDiag = new Button { Text = "Диагностика (сохранить отчёт на рабочий стол)", Height = 30 }; StyleBtn(bDiag);
+            Button bDiag = new Button { Text = L.T("Диагностика (сохранить отчёт на рабочий стол)"), Height = 30 }; StyleBtn(bDiag);
             bDiag.Click += delegate { RunDiag(); };
             Row(b6, bDiag);
             Fit(g6, b6, 6); flow.Controls.Add(g6);
@@ -514,14 +522,14 @@ namespace Mrid6Helper
         void BuildTray()
         {
             ContextMenuStrip m = new ContextMenuStrip();
-            m.Items.Add("Открыть", null, delegate { ShowMain(); });
+            m.Items.Add(L.T("Открыть"), null, delegate { ShowMain(); });
             m.Items.Add(new ToolStripSeparator());
-            m.Items.Add("Тихий", null, delegate { SetMode(2); SyncMode(2); });
-            m.Items.Add("Баланс", null, delegate { SetMode(0); SyncMode(0); });
-            m.Items.Add("Производительность", null, delegate { SetMode(1); SyncMode(1); });
-            m.Items.Add("Пользовательский", null, delegate { rCustom.Checked = true; });
+            m.Items.Add(L.T("Тихий"), null, delegate { SetMode(2); SyncMode(2); });
+            m.Items.Add(L.T("Баланс"), null, delegate { SetMode(0); SyncMode(0); });
+            m.Items.Add(L.T("Производительность"), null, delegate { SetMode(1); SyncMode(1); });
+            m.Items.Add(L.T("Пользовательский"), null, delegate { rCustom.Checked = true; });
             m.Items.Add(new ToolStripSeparator());
-            m.Items.Add("Выход (не запускать до перезагрузки)", null, delegate { AutoStart.MarkExit(); _quit = true; Close(); });
+            m.Items.Add(L.T("Выход (не запускать до перезагрузки)"), null, delegate { AutoStart.MarkExit(); _quit = true; Close(); });
             _tray.ContextMenuStrip = m;
             _tray.Visible = true;
             _tray.Text = "MRID6 Helper";
@@ -541,6 +549,9 @@ namespace Mrid6Helper
                 again.Start();
             }
             FitAll();
+            System.Windows.Forms.Timer refit = new System.Windows.Forms.Timer { Interval = 3000 };      // значения датчиков могли изменить перенос строк — пересчитать высоту групп
+            refit.Tick += delegate { refit.Stop(); refit.Dispose(); FitAll(); };
+            refit.Start();
             if (SelfTestPath != null) { _selfTest = true; _cfg.NoSave = true; new Thread(RunSelfTest) { IsBackground = true, Name = "selftest" }.Start(); return; }
             if (ShotPath == null) return;
             System.Windows.Forms.Timer t = new System.Windows.Forms.Timer { Interval = Math.Max(1, ShotDelaySec) * 1000 };
@@ -643,8 +654,8 @@ namespace Mrid6Helper
             try
             {
                 int perf = Mi.GetByte(Mi.M_PERF);
-                if (perf < 0) { status.Text = "WMI-интерфейс недоступен: " + Mi.LastError + "  (запустите приложение от имени администратора)"; status.ForeColor = Color.Tomato; }
-                else { status.Text = "Интерфейс платы подключён (MICommonInterface)"; status.ForeColor = Color.MediumSeaGreen; }
+                if (perf < 0) { status.Text = L.T("WMI-интерфейс недоступен: ") + Mi.LastError + L.T("  (запустите приложение от имени администратора)"); status.ForeColor = Color.Tomato; }
+                else { status.Text = L.T("Интерфейс платы подключён (MICommonInterface)"); status.ForeColor = Color.MediumSeaGreen; }
                 SyncMode(perf);
                 int v;
                 int kbm = Mi.GetByte(Mi.M_KBMODE), kbb = Mi.GetByte(Mi.M_KBBRIGHT);
@@ -675,6 +686,7 @@ namespace Mrid6Helper
                 FanCurve fc0 = FanCurve.Parse(_cfg.Curve) ?? FanCurve.Preset(0);
                 editor.Curve = fc0; _fc.Curve = fc0.Clone(); _fc.Smooth = _cfg.CurveSmooth;
                 { int pi = -1; for (int q = 0; q < FanCurve.PresetNames.Length; q++) if (FanCurve.Preset(q).Serialize() == fc0.Serialize()) pi = q; cbPreset.SelectedIndex = pi; }
+                cbLang.SelectedIndex = Math.Max(0, Array.IndexOf(new string[] { "auto", "ru", "en", "zh" }, _cfg.Lang));
                 cOsd.Checked = _cfg.Osd; cTrayClose.Checked = _cfg.CloseToTray; cAuto.Checked = AutostartExists();
             }
             finally { _loading = false; }
@@ -698,6 +710,7 @@ namespace Mrid6Helper
             Mi.Set(Mi.M_CPUPOWER, Mi.P_CLOSE);          // по умолчанию — авто: свои лимиты закрыты (проверено: на нативный режим не влияет)
             Mi.Set(Mi.M_FANFIXSW, 0);                   // вентиляторы — автоматика платы, пока не выбран пользовательский режим
             if (_cfg.KbRainbow) { bool l = _loading; _loading = true; cbKb.SelectedIndex = 1; _loading = l; StartRainbow(); }
+            if (!_cfg.KbRainbow && _kbHwMode == 2 && _hwLvl > 0 && _cfg.KbVb > 0) ApplyBrightness(_vb, false);   // привести цвет в регистре к сохранённой яркости
             if (_cfg.CustomActive) rCustom.Checked = true;      // → SetCustom()
         }
 
@@ -731,7 +744,7 @@ namespace Mrid6Helper
             }
             RestartFan();
             status.ForeColor = Color.MediumSeaGreen;
-            status.Text = "Пользовательский режим включён" + (cPower.Checked ? " (свои лимиты)" : "");
+            status.Text = L.T("Пользовательский режим включён") + (cPower.Checked ? L.T(" (свои лимиты)") : "");
         }
 
         void LeaveCustom()
@@ -751,7 +764,7 @@ namespace Mrid6Helper
             _powerOk = ok;
             if (ok) { Thread.Sleep(250); SyncMode(Mi.GetByte(Mi.M_PERF)); }   // плата сама меняет режим: включение → «Производительность», выключение → прежний
             status.ForeColor = ok ? Color.MediumSeaGreen : Color.Tomato;
-            status.Text = ok ? (_cfg.CustomPower ? string.Format("Лимиты применены: SPL {0} Вт, SPPT {1} Вт, стенка {2} °C", _cfg.Spl, _cfg.Sppt, _cfg.Wall) : "Свои лимиты выключены") : "Не удалось применить лимиты: " + Mi.LastError;
+            status.Text = ok ? (_cfg.CustomPower ? string.Format(L.T("Лимиты применены: SPL {0} Вт, SPPT {1} Вт, стенка {2} °C"), _cfg.Spl, _cfg.Sppt, _cfg.Wall) : L.T("Свои лимиты выключены")) : L.T("Не удалось применить лимиты: ") + Mi.LastError;
         }
 
         void RestartFan()
@@ -766,7 +779,7 @@ namespace Mrid6Helper
             if (!_custom) return;
             int kind = cbFan.SelectedIndex < 0 ? 0 : cbFan.SelectedIndex;
             int cpu = s.CpuT, gpu = s.GpuT;
-            if (kind == 1) { lFanInfo.Text = "Вентиляторами управляет автоматика платы."; return; }
+            if (kind == 1) { lFanInfo.Text = L.T("Вентиляторами управляет автоматика платы."); return; }
             if (cpu <= 0 && gpu <= 0) return;                            // нет данных — не трогаем
             double raw = Math.Max(cpu, gpu);
             int nowMs = Environment.TickCount;
@@ -787,9 +800,9 @@ namespace Mrid6Helper
             if (kind == 0)
             {
                 editor.CurT = _fc.SmoothT; editor.CurP = _fanOut; editor.Invalidate();
-                lFanInfo.Text = string.Format("Сейчас: {0:0.#} °C (сглаж.) → обороты {1} %, по кривой {2:0} %", _fc.SmoothT, _fanOut, _fc.Target);
+                lFanInfo.Text = string.Format(L.T("Сейчас: {0:0.#} °C (сглаж.) → обороты {1} %, по кривой {2:0} %"), _fc.SmoothT, _fanOut, _fc.Target);
             }
-            else lFanInfo.Text = string.Format("Фиксированные обороты {0} %{1}", _fanOut, _boosted ? " — защита от перегрева" : "");
+            else lFanInfo.Text = string.Format(L.T("Фиксированные обороты {0} %{1}"), _fanOut, _boosted ? L.T(" — защита от перегрева") : "");
         }
 
         /// <summary>Фиксированные обороты с защитой: при CPU ≥ 90 / GPU ≥ 88 временно 100 %, возврат после остывания.</summary>
@@ -800,11 +813,11 @@ namespace Mrid6Helper
             if (!_boosted && hot && _hotTicks >= 2 && tFan.Value < 100)
             {
                 _boosted = true; Log.Write("guard: boost cpu=" + cpu + " gpu=" + gpu);
-                status.ForeColor = Color.Orange; status.Text = "Защита: перегрев — обороты временно 100%";
+                status.ForeColor = Color.Orange; status.Text = L.T("Защита: перегрев — обороты временно 100%");
             }
             else if (_boosted && cool)
             {
-                _boosted = false; status.ForeColor = Color.MediumSeaGreen; status.Text = "Температура в норме — обороты " + tFan.Value + "%";
+                _boosted = false; status.ForeColor = Color.MediumSeaGreen; status.Text = L.T("Температура в норме — обороты ") + tFan.Value + "%";
             }
             return _boosted ? 100 : tFan.Value;
         }
@@ -910,7 +923,7 @@ namespace Mrid6Helper
             Touch();
             string note = ""; bool ok = true;
             _cfg.KbRainbow = index == 1; _cfg.Save();
-            if (index == 1) { StartRainbow(); status.ForeColor = Color.MediumSeaGreen; status.Text = "Подсветка: плавная радуга (работает, пока запущено приложение)"; return; }
+            if (index == 1) { StartRainbow(); status.ForeColor = Color.MediumSeaGreen; status.Text = L.T("Подсветка: плавная радуга (работает, пока запущено приложение)"); return; }
             StopRainbow();
             if (index == 0)
             {
@@ -925,13 +938,13 @@ namespace Mrid6Helper
                 {   // сразу после записи цвета плата может проигнорировать смену режима — повторяем с паузой
                     Thread.Sleep(600); ok = Mi.Set(Mi.M_KBMODE, (byte)hwMode);
                 }
-                if (ok && Mi.GetByte(Mi.M_KBMODE) != hwMode) { ok = false; Mi.LastError = "плата не приняла режим " + hwMode; }
+                if (ok && Mi.GetByte(Mi.M_KBMODE) != hwMode) { ok = false; Mi.LastError = L.T("плата не приняла режим ") + hwMode; }
                 if (ok) _kbHwMode = hwMode;
-                if (ok && (_hwLvl <= 0 || _vb <= 0.5)) { ApplyBrightness(100, true); note = " (яркость была 0 — поднята до 100%)"; }
+                if (ok && (_hwLvl <= 0 || _vb <= 0.5)) { ApplyBrightness(100, true); note = L.T(" (яркость была 0 — поднята до 100%)"); }
                 else if (ok) ApplyBrightness(_vb, false);     // вернуть выбранный цвет (с учётом яркости) после радуги
             }
             status.ForeColor = ok ? Color.MediumSeaGreen : Color.Tomato;
-            status.Text = ok ? "Подсветка: " + cbKb.Items[index] + note : "Не удалось сменить режим подсветки: " + Mi.LastError;
+            status.Text = ok ? L.T("Подсветка: ") + cbKb.Items[index] + note : L.T("Не удалось сменить режим подсветки: ") + Mi.LastError;
         }
 
         void PickColor()
@@ -952,10 +965,10 @@ namespace Mrid6Helper
         void ApplyGpuMode()
         {
             if (cbGpu.SelectedIndex < 0) return;
-            if (MessageBox.Show(this, "Переключение режима GPU вступит в силу после перезагрузки. Продолжить?", "Режим GPU", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
+            if (MessageBox.Show(this, L.T("Переключение режима GPU вступит в силу после перезагрузки. Продолжить?"), L.T("Режим GPU"), MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
             bool ok = Mi.Set(Mi.M_GPUMODE, (byte)cbGpu.SelectedIndex);
             status.ForeColor = ok ? Color.MediumSeaGreen : Color.Tomato;
-            status.Text = ok ? "Режим GPU записан — перезагрузите ноутбук" : "Не удалось записать режим GPU: " + Mi.LastError;
+            status.Text = ok ? L.T("Режим GPU записан — перезагрузите ноутбук") : L.T("Не удалось записать режим GPU: ") + Mi.LastError;
         }
 
         // ------------------------------------------------------------------ автозапуск
@@ -963,8 +976,22 @@ namespace Mrid6Helper
         void SetAutostart(bool on)
         {
             string err = on ? AutoStart.Install(Application.ExecutablePath) : AutoStart.Remove();
-            if (err != null) { status.ForeColor = Color.Tomato; status.Text = "Автозапуск: " + err; }
-            else { status.ForeColor = Color.MediumSeaGreen; status.Text = on ? "Автозапуск включён: запуск при входе и контроль раз в минуту" : "Автозапуск выключен"; }
+            if (err != null) { status.ForeColor = Color.Tomato; status.Text = L.T("Автозапуск: ") + err; }
+            else { status.ForeColor = Color.MediumSeaGreen; status.Text = on ? L.T("Автозапуск включён: запуск при входе и контроль раз в минуту") : L.T("Автозапуск выключен"); }
+        }
+
+        void ChangeLanguage()
+        {
+            string[] codes = { "auto", "ru", "en", "zh" };
+            _cfg.Lang = codes[Math.Max(0, Math.Min(3, cbLang.SelectedIndex))]; _cfg.Save();
+            // выбранный язык действует после перезапуска (подписи строятся при старте)
+            if (MessageBox.Show(this, L.T("Язык будет применён после перезапуска программы. Перезапустить сейчас?"), "Language / Язык / 语言", MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes) RestartSelf();
+        }
+
+        void RestartSelf()
+        {
+            try { Process.Start(new ProcessStartInfo("cmd.exe", "/c ping -n 3 127.0.0.1 >nul & schtasks /Run /TN " + AutoStart.OpenTaskName) { CreateNoWindow = true, UseShellExecute = false }); } catch { }
+            _quit = true; Close();
         }
 
         void RunDiag()
@@ -975,7 +1002,7 @@ namespace Mrid6Helper
                 File.WriteAllText(path, Probe.Report(), Encoding.UTF8);
                 Process.Start("notepad.exe", "\"" + path + "\"");
             }
-            catch (Exception ex) { status.Text = "Диагностика: " + ex.Message; }
+            catch (Exception ex) { status.Text = L.T("Диагностика: ") + ex.Message; }
         }
 
         // ------------------------------------------------------------------ события Fn
@@ -995,21 +1022,21 @@ namespace Mrid6Helper
                                 LeaveCustom(); Mi.SetPerfMode(val); Touch();
                             }
                             SyncMode(val);
-                            msg = "Режим: " + (val == 2 ? "Тихий" : val == 1 ? "Производительность" : "Баланс");
+                            msg = L.T("Режим: ") + (val == 2 ? L.T("Тихий") : val == 1 ? L.T("Производительность") : L.T("Баланс"));
                             break;
                         case FnEvents.EV_KBBRIGHT:
                             HandleFnBrightness(val);
-                            msg = "Яркость подсветки: " + (int)Math.Round(_vb) + " %"; break;
+                            msg = L.T("Яркость подсветки: ") + (int)Math.Round(_vb) + " %"; break;
                         case FnEvents.EV_KBMODE:
                             if (_rainbow && unchecked(Environment.TickCount - _quiet) >= 0) { StopRainbow(); _cfg.KbRainbow = false; }
                             _kbHwMode = val;
                             { bool l = _loading; _loading = true; cbKb.SelectedIndex = KbIndex(val, _hwLvl); _loading = l; }
-                            msg = "Подсветка: " + (val == 1 ? "радуга" : val == 2 ? "один цвет" : "режим " + val); break;
+                            msg = L.T("Подсветка: ") + (val == 1 ? L.T("радуга") : val == 2 ? L.T("один цвет") : L.T("режим ") + val); break;
                         case FnEvents.EV_TOUCHPAD:
-                            msg = "Тачпад: " + (val == 1 ? "включён" : "выключен"); break;
-                        case FnEvents.EV_FN: msg = "Fn-lock: " + (val == 1 ? "вкл" : "выкл"); break;
-                        case FnEvents.EV_AIRPLANE: msg = "Режим «в самолёте»"; break;
-                        case FnEvents.EV_AMBIENT: msg = "Периметр: " + (val == 1 ? "вкл" : "выкл"); break;
+                            msg = L.T("Тачпад: ") + (val == 1 ? L.T("включён") : L.T("выключен")); break;
+                        case FnEvents.EV_FN: msg = "Fn-lock: " + (val == 1 ? L.T("вкл") : L.T("выкл")); break;
+                        case FnEvents.EV_AIRPLANE: msg = L.T("Режим «в самолёте»"); break;
+                        case FnEvents.EV_AMBIENT: msg = L.T("Периметр: ") + (val == 1 ? L.T("вкл") : L.T("выкл")); break;
                     }
                     if (msg != null && _cfg.Osd) _osd.Flash(msg);
                 });
@@ -1324,8 +1351,8 @@ namespace Mrid6Helper
             lFanG.Text = s.FanG >= 0 ? s.FanG.ToString() : "—";
             lCpuLoad.Text = s.CpuLoad >= 0 ? s.CpuLoad + " %" : "—";
             lGpuUtil.Text = s.GpuUtil >= 0 ? s.GpuUtil + " %" : "—";
-            lGpuW.Text = s.GpuW >= 0 ? s.GpuW + " Вт" : "—";
-            lGpuClk.Text = s.GpuClk >= 0 ? s.GpuClk + " МГц" : "—";
+            lGpuW.Text = s.GpuW >= 0 ? s.GpuW + L.T(" Вт") : "—";
+            lGpuClk.Text = s.GpuClk >= 0 ? s.GpuClk + L.T(" МГц") : "—";
 
             hCpu.Add(s.CpuT); hGpu.Add(s.GpuT);
             if (hCpu.Count > 120) { hCpu.RemoveAt(0); hGpu.RemoveAt(0); }
@@ -1334,7 +1361,7 @@ namespace Mrid6Helper
             int mx = Math.Max(s.CpuT, s.GpuT);
             Icon ni = MakeIcon(mx, ModeColor(_custom ? 3 : _mode), mx >= 90);
             _tray.Icon = ni; if (_lastIcon != null) _lastIcon.Dispose(); _lastIcon = ni;
-            _tray.Text = Trim63(string.Format("CPU {0}°  GPU {1}°\nКулеры {2}/{3}", s.CpuT, s.GpuT, s.FanC, s.FanG));
+            _tray.Text = Trim63(string.Format(L.T("CPU {0}°  GPU {1}°\nКулеры {2}/{3}"), s.CpuT, s.GpuT, s.FanC, s.FanG));
 
             FanTick(s);
         }

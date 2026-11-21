@@ -13,8 +13,8 @@ namespace Mrid6Helper
     {
         static readonly string[] Names =
         {
-            "08 SystemPerMode (0 баланс/1 произв./2 тихий)", "09 GPUMode (0 гибрид/1 дискр.)", "0A RGBKeyboardStatus", "0B FnLock", "0C TPLock",
-            "0D CPU/GPU fan RPM", "0F Ambientlight", "10 RGB mode", "11 RGB color", "12 RGB brightness", "13 AC type (1 TypeC/2 круглый)",
+            "08 SystemPerMode (0 balanced/1 performance/2 quiet)", "09 GPUMode (0 hybrid/1 discrete)", "0A RGBKeyboardStatus", "0B FnLock", "0C TPLock",
+            "0D CPU/GPU fan RPM", "0F Ambientlight", "10 RGB mode", "11 RGB color", "12 RGB brightness", "13 AC type (1 TypeC/2 round)",
             "14 MaxFanSpeedSwitch", "15 MaxFanSpeed %", "16 CPU thermometer", "17 CPU power state"
         };
         static readonly byte[] Ids = { 8, 9, 10, 11, 12, 13, 15, 16, 17, 18, 19, 20, 21, 22, 23 };
@@ -22,12 +22,12 @@ namespace Mrid6Helper
         public static string Report()
         {
             StringBuilder sb = new StringBuilder();
-            sb.AppendLine("MRID6 Helper — диагностика " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
-            sb.AppendLine("Администратор: " + new System.Security.Principal.WindowsPrincipal(System.Security.Principal.WindowsIdentity.GetCurrent()).IsInRole(System.Security.Principal.WindowsBuiltInRole.Administrator));
+            sb.AppendLine("MRID6 Helper — diagnostics " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
+            sb.AppendLine("Administrator: " + new System.Security.Principal.WindowsPrincipal(System.Security.Principal.WindowsIdentity.GetCurrent()).IsInRole(System.Security.Principal.WindowsBuiltInRole.Administrator));
             try
             {
                 using (ManagementObjectSearcher s = new ManagementObjectSearcher("SELECT Manufacturer, Model FROM Win32_ComputerSystem"))
-                    foreach (ManagementObject o in s.Get()) sb.AppendLine("Машина: " + o["Manufacturer"] + " " + o["Model"]);
+                    foreach (ManagementObject o in s.Get()) sb.AppendLine("Machine: " + o["Manufacturer"] + " " + o["Model"]);
                 using (ManagementObjectSearcher s = new ManagementObjectSearcher("SELECT SMBIOSBIOSVersion FROM Win32_BIOS"))
                     foreach (ManagementObject o in s.Get()) sb.AppendLine("BIOS: " + o["SMBIOSBIOSVersion"]);
             }
@@ -37,15 +37,15 @@ namespace Mrid6Helper
             for (int i = 0; i < Ids.Length; i++)
             {
                 byte[] o = Mi.Call(Mi.GET, Ids[i]);
-                sb.AppendLine(string.Format("{0,-44} out[0..11] = {1}", Names[i], o == null ? "(нет ответа: " + Mi.LastError + ")" : Mi.Hex(Slice(o, 12))));
+                sb.AppendLine(string.Format("{0,-44} out[0..11] = {1}", Names[i], o == null ? "(no answer: " + Mi.LastError + ")" : Mi.Hex(Slice(o, 12))));
             }
             int c, g;
             if (Mi.GetFans(out c, out g)) sb.AppendLine(string.Format("RPM: CPU {0}, GPU {1}", c, g));
             sb.AppendLine("CPU thermometer (EC): " + Mi.GetByte(Mi.M_CPUTEMP));
             sb.AppendLine("ACPI thermal zone: " + Acpi.ThermalZoneC());
             int t, p, ck, ut;
-            if (Nvml.Init() && Nvml.Read(out t, out p, out ck, out ut)) sb.AppendLine(string.Format("NVML: {0} °C, {1} Вт, {2} МГц, {3}%", t, p, ck, ut));
-            else sb.AppendLine("NVML: недоступен");
+            if (Nvml.Init() && Nvml.Read(out t, out p, out ck, out ut)) sb.AppendLine(string.Format("NVML: {0} °C, {1} W, {2} MHz, {3}%", t, p, ck, ut));
+            else sb.AppendLine("NVML: unavailable");
             return sb.ToString();
         }
 
@@ -95,7 +95,7 @@ namespace Mrid6Helper
                                 burnStop = true;
                                 int skip = Math.Min(4, fl.Count / 2); double sf = 0, sp = 0; int n = 0;
                                 for (int q = skip; q < fl.Count; q++) { sf += fl[q]; sp += pl[q]; n++; }
-                                sb.AppendLine(string.Format("B {0:HH:mm:ss} нагрузка {1} с: частота {2:0} МГц, производительность {3:0} %, cpuTmax={4}", DateTime.Now, secs, n > 0 ? sf / n : -1, n > 0 ? sp / n : -1, tmax));
+                                sb.AppendLine(string.Format("B {0:HH:mm:ss} load {1} s: frequency {2:0} MHz, performance {3:0} %, cpuTmax={4}", DateTime.Now, secs, n > 0 ? sf / n : -1, n > 0 ? sp / n : -1, tmax));
                                 break;
                             }
                         case "W": Thread.Sleep(int.Parse(p[1])); break;
@@ -119,9 +119,11 @@ namespace Mrid6Helper
 
     static class Program
     {
+        public static string LangOverride;     // --lang ru|en|zh|auto (самотест по умолчанию на русском)
         [STAThread]
         static int Main(string[] args)
         {
+            { int li = Array.IndexOf(args, "--lang"); if (li >= 0 && li + 1 < args.Length) LangOverride = args[li + 1]; else if (Array.IndexOf(args, "--selftest") >= 0) LangOverride = "ru"; }
             for (int i = 0; i < args.Length; i++)
             {
                 if (args[i] == "--autostart" && i + 1 < args.Length)
@@ -150,7 +152,7 @@ namespace Mrid6Helper
             using (Mutex m = new Mutex(true, "Local\\Mrid6Helper.Single", out created))
             {
                 EventWaitHandle show = new EventWaitHandle(false, EventResetMode.AutoReset, "Local\\Mrid6Helper.Show");
-                if (!created) { show.Set(); return 0; }
+                if (!created) { if (!watchdog) show.Set(); return 0; }   // наблюдатель (раз в минуту) только проверяет и молча выходит; окно показывает лишь ручной запуск/ярлык
 
                 Application.ThreadException += delegate (object o, ThreadExceptionEventArgs e) { Log.Write("UI exception: " + e.Exception); };
                 AppDomain.CurrentDomain.UnhandledException += delegate (object o, UnhandledExceptionEventArgs e) { Log.Write("FATAL: " + e.ExceptionObject); };
