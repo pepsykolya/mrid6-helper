@@ -15,15 +15,18 @@ namespace Mrid6Helper
     /// <summary>Настройки приложения (простой key=value в %APPDATA%\Mrid6Helper\settings.ini)</summary>
     sealed class Cfg
     {
-        public bool CustomPower;               // только на время сеанса: по умолчанию всегда «авто»
+        public bool CustomPower;               // «свои лимиты» внутри пользовательского режима
         public bool KbRainbow;                 // последний выбор подсветки — программная радуга
         public int Spl = 101, Sppt = 105, Wall = 99;           // пределы вендора: SPL 95..105, SPPT 105..120, стенка 89..100
-        public bool FanFixed;
-        public int FanPct = 60;
+        public int FanPct = 60;                // значение для «фиксированных оборотов»
         public bool Osd;
         public bool CloseToTray = true;
         public bool NoSave;                    // самотест: не писать настройки
-        public bool HasFan;                    // в файле настроек есть сохранённый выбор по вентиляторам
+        public bool CustomActive;              // пользовательский режим выбран (восстанавливается при запуске)
+        public int CustomBase;                 // базовый режим платы: индекс списка 0 баланс, 1 тихий, 2 производительность
+        public int FanKind;                    // 0 кривая, 1 автоматика платы, 2 фиксированные обороты
+        public int CurveSmooth = 5;            // плавность кривой 1..10
+        public string Curve = "";              // точки кривой «t:p,t:p,...»
 
         static string PathFile()
         {
@@ -49,7 +52,12 @@ namespace Mrid6Helper
                         case "Spl": if (int.TryParse(v, out n)) c.Spl = n; break;
                         case "Sppt": if (int.TryParse(v, out n)) c.Sppt = n; break;
                         case "Wall": if (int.TryParse(v, out n)) c.Wall = n; break;
-                        case "FanFixed": c.FanFixed = b; c.HasFan = true; break;
+                        case "CustomLimits": c.CustomPower = b; break;
+                        case "CustomActive": c.CustomActive = b; break;
+                        case "CustomBase": if (int.TryParse(v, out n)) c.CustomBase = n; break;
+                        case "FanKind": if (int.TryParse(v, out n)) c.FanKind = n; break;
+                        case "CurveSmooth": if (int.TryParse(v, out n)) c.CurveSmooth = n; break;
+                        case "Curve": c.Curve = v; break;
                         case "FanPct": if (int.TryParse(v, out n)) c.FanPct = n; break;
                         case "Osd": c.Osd = b; break;
                         case "CloseToTray": c.CloseToTray = b; break;
@@ -58,7 +66,7 @@ namespace Mrid6Helper
             }
             catch { }
             c.Spl = Clamp(c.Spl, 95, 105); c.Sppt = Clamp(c.Sppt, 105, 120); c.Wall = Clamp(c.Wall, 89, 100);
-            c.FanPct = Clamp(c.FanPct, 30, 100);
+            c.FanPct = Clamp(c.FanPct, 30, 100); c.CustomBase = Clamp(c.CustomBase, 0, 2); c.FanKind = Clamp(c.FanKind, 0, 2); c.CurveSmooth = Clamp(c.CurveSmooth, 1, 10);
             return c;
         }
 
@@ -68,8 +76,9 @@ namespace Mrid6Helper
             try
             {
                 List<string> lines = new List<string> { "KbRainbow=" + (KbRainbow ? 1 : 0), "Spl=" + Spl, "Sppt=" + Sppt, "Wall=" + Wall,
-                    "Osd=" + (Osd ? 1 : 0), "CloseToTray=" + (CloseToTray ? 1 : 0) };
-                if (HasFan) { lines.Add("FanFixed=" + (FanFixed ? 1 : 0)); lines.Add("FanPct=" + FanPct); }   // только явный выбор пользователя
+                    "Osd=" + (Osd ? 1 : 0), "CloseToTray=" + (CloseToTray ? 1 : 0), "FanPct=" + FanPct, "CustomLimits=" + (CustomPower ? 1 : 0),
+                    "CustomActive=" + (CustomActive ? 1 : 0), "CustomBase=" + CustomBase, "FanKind=" + FanKind, "CurveSmooth=" + CurveSmooth };
+                if (!string.IsNullOrEmpty(Curve)) lines.Add("Curve=" + Curve);
                 File.WriteAllText(PathFile(), string.Join(Environment.NewLine, lines.ToArray()));
             }
             catch { }
@@ -208,10 +217,16 @@ namespace Mrid6Helper
         readonly CheckBox cPower = new ToggleBox();
         readonly TrackBar tSpl = new TrackBar(), tSppt = new TrackBar(), tWall = new TrackBar();
         readonly Label vSpl = new Label(), vSppt = new Label(), vWall = new Label();
-        // вентиляторы
-        readonly CheckBox cFan = new ToggleBox();
-        readonly TrackBar tFan = new TrackBar();
-        readonly Label vFan = new Label();
+        // пользовательский режим и вентиляторы
+        readonly RadioButton rCustom = new RadioButton();
+        readonly ComboBox cbBase = new ComboBox(), cbFan = new ComboBox(), cbPreset = new ComboBox();
+        readonly TrackBar tFan = new TrackBar(), tSmooth = new TrackBar();
+        readonly Label vFan = new Label(), vSmooth = new Label(), lFanInfo = new Label();
+        readonly CurveEditor editor = new CurveEditor();
+        readonly FanController _fc = new FanController();
+        bool _custom;                        // включён пользовательский режим
+        int _fanOut = -1, _lastFanMs, _fanChk;
+        bool _fanSw, _fanClock;
         // клавиатура
         readonly ComboBox cbKb = new ComboBox();
         readonly TrackBar tBright = new TrackBar();
@@ -279,44 +294,73 @@ namespace Mrid6Helper
 
             // --- Режим ---
             TableLayoutPanel b2; GroupBox g2 = Group("Режим производительности  (Fn+F10)", out b2);
-            TableLayoutPanel t2 = Grid(3, 0, 0, 0);
-            StyleMode(rQuiet, "Тихий"); StyleMode(rBal, "Баланс"); StyleMode(rPerf, "Производит.");
+            TableLayoutPanel t2 = Grid(4, 0, 0, 0, 0);
+            StyleMode(rQuiet, "Тихий"); StyleMode(rBal, "Баланс"); StyleMode(rPerf, "Игровой"); StyleMode(rCustom, "Свой");
             t2.RowCount = 1; t2.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            t2.Controls.Add(rQuiet, 0, 0); t2.Controls.Add(rBal, 1, 0); t2.Controls.Add(rPerf, 2, 0);
+            t2.Controls.Add(rQuiet, 0, 0); t2.Controls.Add(rBal, 1, 0); t2.Controls.Add(rPerf, 2, 0); t2.Controls.Add(rCustom, 3, 0);
             rQuiet.CheckedChanged += delegate { if (rQuiet.Checked) SetMode(2); };
             rBal.CheckedChanged += delegate { if (rBal.Checked) SetMode(0); };
             rPerf.CheckedChanged += delegate { if (rPerf.Checked) SetMode(1); };
+            rCustom.CheckedChanged += delegate { if (rCustom.Checked) SetCustom(); };
             Row(b2, t2);
-            Fit(g2, b2, 4); flow.Controls.Add(g2);
+            Row(b2, Hint("«Игровой» — режим платы «Производительность». «Свой» — пользовательский: плавная кривая вентиляторов и, по желанию, свои лимиты питания (настройки ниже)."));
+            Fit(g2, b2, 8); flow.Controls.Add(g2);
 
-            // --- Лимиты питания ---
-            TableLayoutPanel b3; GroupBox g3 = Group("Лимиты питания CPU", out b3);
-            Flat(cPower); cPower.Text = "Свои лимиты (включают режим «Производительность»)";
+            // --- Пользовательский режим ---
+            TableLayoutPanel b3; GroupBox g3 = Group("Пользовательский режим", out b3);
+            TableLayoutPanel tcb = Grid(2, LabelW, 0);
+            StyleCombo(cbBase); cbBase.Items.AddRange(new object[] { "Баланс", "Тихий", "Производительность" });
+            cbBase.SelectedIndexChanged += delegate { if (_loading) return; _cfg.CustomBase = cbBase.SelectedIndex; _cfg.Save(); if (_custom) ReapplyCustom(); };
+            Pair(tcb, "Базовый режим", cbBase);
+            StyleCombo(cbFan); cbFan.Items.AddRange(new object[] { "Кривая (плавная)", "Автоматика платы", "Фиксированные обороты" });
+            cbFan.SelectedIndexChanged += delegate { if (_loading) return; _cfg.FanKind = cbFan.SelectedIndex; _cfg.FanPct = tFan.Value; _cfg.Save(); if (_custom) RestartFan(); };
+            Pair(tcb, "Вентиляторы", cbFan);
+            Row(b3, tcb);
+            editor.Height = 190; Row(b3, editor);
+            editor.Changed += delegate
+            {
+                _fc.Curve = editor.Curve.Clone(); _cfg.Curve = editor.Curve.Serialize(); _cfg.Save();
+                bool l = _loading; _loading = true; cbPreset.SelectedIndex = -1; _loading = l;
+            };
+            TableLayoutPanel tpr = Grid(2, LabelW, 0);
+            StyleCombo(cbPreset); cbPreset.Items.AddRange(FanCurve.PresetNames);
+            cbPreset.SelectedIndexChanged += delegate
+            {
+                if (_loading || cbPreset.SelectedIndex < 0) return;
+                editor.Curve = FanCurve.Preset(cbPreset.SelectedIndex); editor.Invalidate();
+                _fc.Curve = editor.Curve.Clone(); _cfg.Curve = editor.Curve.Serialize(); _cfg.Save();
+            };
+            Pair(tpr, "Шаблон кривой", cbPreset);
+            Row(b3, tpr);
+            TableLayoutPanel tsm = Grid(3, LabelW, 0, 52);
+            Slider(tsm, "Плавность, 1–10", tSmooth, vSmooth, 1, 10);
+            tSmooth.ValueChanged += delegate { _fc.Smooth = tSmooth.Value; if (!_loading) { _cfg.CurveSmooth = tSmooth.Value; _cfg.Save(); } };
+            Row(b3, tsm);
+            TableLayoutPanel tfx = Grid(3, LabelW, 0, 52);
+            Slider(tfx, "Фикс. обороты, %", tFan, vFan, 30, 100);
+            tFan.MouseUp += delegate { if (_loading) return; _cfg.FanPct = tFan.Value; _cfg.Save(); if (_custom && cbFan.SelectedIndex == 2) RestartFan(); };
+            tFan.KeyUp += delegate { if (_loading) return; _cfg.FanPct = tFan.Value; _cfg.Save(); if (_custom && cbFan.SelectedIndex == 2) RestartFan(); };
+            Row(b3, tfx);
+            lFanInfo.ForeColor = Dim; lFanInfo.AutoSize = true; lFanInfo.MaximumSize = new Size(GroupW - 40, 0); lFanInfo.Text = "Кривая работает в пользовательском режиме (кнопка «Свой»).";
+            Row(b3, lFanInfo);
+            Flat(cPower); cPower.Text = "Свои лимиты питания (включают режим «Производительность»)";
             Row(b3, cPower);
-            TableLayoutPanel t3 = Grid(3, LabelW, 0, 52);
-            Slider(t3, "SPL, Вт", tSpl, vSpl, 95, 105);
-            Slider(t3, "SPPT, Вт", tSppt, vSppt, 105, 120);
-            Slider(t3, "Температурная стенка, °C", tWall, vWall, 89, 100);
-            Row(b3, t3);
-            Button bApply = new Button { Text = "Применить", Height = 32 }; StyleBtn(bApply);
-            bApply.Click += delegate { ApplyPower(true); };
-            cPower.CheckedChanged += delegate { if (!_loading) ApplyPower(true); };
+            TableLayoutPanel tpw = Grid(3, LabelW, 0, 52);
+            Slider(tpw, "SPL, Вт", tSpl, vSpl, 95, 105);
+            Slider(tpw, "SPPT, Вт", tSppt, vSppt, 105, 120);
+            Slider(tpw, "Температурная стенка, °C", tWall, vWall, 89, 100);
+            Row(b3, tpw);
+            Button bApply = new Button { Text = "Применить лимиты", Height = 32 }; StyleBtn(bApply);
+            bApply.Click += delegate { if (!_custom) rCustom.Checked = true; else ReapplyCustom(); };
+            cPower.CheckedChanged += delegate
+            {
+                if (_loading) return;
+                _cfg.CustomPower = cPower.Checked; _cfg.Save();
+                if (_custom) ReapplyCustom(); else if (cPower.Checked) rCustom.Checked = true;
+            };
             Row(b3, bApply);
-            Row(b3, Hint("Диапазоны — как в штатной программе вендора. Лимиты сбрасываются при смене режима и сне — приложение применяет их заново автоматически."));
-            Fit(g3, b3, 28); flow.Controls.Add(g3);
-
-            // --- Вентиляторы ---
-            TableLayoutPanel b4; GroupBox g4 = Group("Вентиляторы", out b4);
-            Flat(cFan); cFan.Text = "Фиксированные обороты (вместо автоматики)";
-            Row(b4, cFan);
-            TableLayoutPanel t4 = Grid(3, LabelW, 0, 52);
-            Slider(t4, "Обороты, %", tFan, vFan, 30, 100);
-            Row(b4, t4);
-            Row(b4, Hint("100% ≈ 5000 об/мин, выше ~60% обороты почти не растут. Защита: при CPU ≥ 90 °C или GPU ≥ 88 °C обороты автоматически поднимутся до 100% и вернутся после остывания."));
-            cFan.CheckedChanged += delegate { if (!_loading) ApplyFan(); };
-            tFan.MouseUp += delegate { if (!_loading) ApplyFan(); };
-            tFan.KeyUp += delegate { if (!_loading) ApplyFan(); };
-            Fit(g4, b4, 40); flow.Controls.Add(g4);
+            Row(b3, Hint("Красная зона на графике — защитный пол: ниже него кривую опустить нельзя. Диапазоны лимитов — как в штатной программе вендора."));
+            Fit(g3, b3, 40); flow.Controls.Add(g3);
 
             // --- Клавиатура ---
             TableLayoutPanel b5; GroupBox g5 = Group("Клавиатура и светодиоды  (Fn+F9)", out b5);
@@ -439,6 +483,7 @@ namespace Mrid6Helper
             t.Controls.Add(Lbl(name), 0, row); t.Controls.Add(tb, 1, row); t.Controls.Add(val, 2, row);
         }
         static void Flat(CheckBox c) { c.ForeColor = Fg; c.FlatStyle = FlatStyle.Flat; c.AutoSize = true; c.Padding = new Padding(2, 2, 2, 2); }
+        static void StyleCombo(ComboBox c) { c.DropDownStyle = ComboBoxStyle.DropDownList; c.FlatStyle = FlatStyle.Flat; c.BackColor = Panel2; c.ForeColor = Fg; }
         static void StyleBtn(Button b) { b.FlatStyle = FlatStyle.Flat; b.BackColor = Panel2; b.ForeColor = Fg; b.FlatAppearance.BorderColor = Color.FromArgb(60, 66, 80); b.Cursor = Cursors.Hand; }
         static void StyleMode(RadioButton r, string text)
         {
@@ -456,6 +501,7 @@ namespace Mrid6Helper
             m.Items.Add("Тихий", null, delegate { SetMode(2); SyncMode(2); });
             m.Items.Add("Баланс", null, delegate { SetMode(0); SyncMode(0); });
             m.Items.Add("Производительность", null, delegate { SetMode(1); SyncMode(1); });
+            m.Items.Add("Пользовательский", null, delegate { rCustom.Checked = true; });
             m.Items.Add(new ToolStripSeparator());
             m.Items.Add("Выход", null, delegate { _quit = true; Close(); });
             _tray.ContextMenuStrip = m;
@@ -521,6 +567,7 @@ namespace Mrid6Helper
                 case 2: return Color.FromArgb(0, 112, 192);
                 case 0: return Color.FromArgb(0, 128, 84);
                 case 1: return Color.FromArgb(240, 130, 0);
+                case 3: return Color.FromArgb(150, 90, 220);     // пользовательский
                 default: return Color.FromArgb(110, 116, 128);
             }
         }
@@ -568,33 +615,33 @@ namespace Mrid6Helper
                 v = Mi.GetByte(Mi.M_AMBIENT); if (v >= 0) cAmb.Checked = v == 1;
                 v = Mi.GetByte(Mi.M_GPUMODE); if (v >= 0 && v < cbGpu.Items.Count) cbGpu.SelectedIndex = v;
 
-                cPower.Checked = false; tSpl.Value = _cfg.Spl; tSppt.Value = _cfg.Sppt; tWall.Value = _cfg.Wall;
-                // вентиляторы: если пользователь не сохранял выбор — берём реальное состояние железа
-                if (!_cfg.HasFan)
-                {
-                    int sw = Mi.GetByte(Mi.M_FANFIXSW), pct = Mi.GetByte(Mi.M_FANFIX);
-                    _cfg.FanFixed = sw == 1; if (pct > 0) _cfg.FanPct = Cfg.Clamp(pct, 30, 100);
-                    Log.Write("fan hw state: fixed=" + sw + " pct=" + pct);
-                }
-                cFan.Checked = _cfg.FanFixed; tFan.Value = _cfg.FanPct;
+                tSpl.Value = _cfg.Spl; tSppt.Value = _cfg.Sppt; tWall.Value = _cfg.Wall; cPower.Checked = _cfg.CustomPower;
+                cbBase.SelectedIndex = _cfg.CustomBase; cbFan.SelectedIndex = _cfg.FanKind; tFan.Value = _cfg.FanPct; tSmooth.Value = _cfg.CurveSmooth;
+                FanCurve fc0 = FanCurve.Parse(_cfg.Curve) ?? FanCurve.Preset(0);
+                editor.Curve = fc0; _fc.Curve = fc0.Clone(); _fc.Smooth = _cfg.CurveSmooth; cbPreset.SelectedIndex = -1;
                 cOsd.Checked = _cfg.Osd; cTrayClose.Checked = _cfg.CloseToTray; cAuto.Checked = AutostartExists();
             }
             finally { _loading = false; }
         }
 
+        static readonly int[] BaseModes = { 0, 2, 1 };      // индекс списка «Баланс / Тихий / Производительность» → режим платы
+        int BaseMode { get { int i = cbBase.SelectedIndex; return BaseModes[i < 0 ? 0 : i]; } }
+
         void SyncMode(int perf)
         {
             bool l = _loading; _loading = true;
             if (perf >= 0) _mode = perf;
-            rQuiet.Checked = perf == 2; rBal.Checked = perf == 0; rPerf.Checked = perf == 1;
+            if (_custom) rCustom.Checked = true;
+            else { rQuiet.Checked = perf == 2; rBal.Checked = perf == 0; rPerf.Checked = perf == 1; }
             _loading = l;
         }
 
         void ApplyStartup()
         {
             Mi.Set(Mi.M_CPUPOWER, Mi.P_CLOSE);          // по умолчанию — авто: свои лимиты закрыты (проверено: на нативный режим не влияет)
-            if (_cfg.HasFan && _cfg.FanFixed) ApplyFan();
+            Mi.Set(Mi.M_FANFIXSW, 0);                   // вентиляторы — автоматика платы, пока не выбран пользовательский режим
             if (_cfg.KbRainbow) { bool l = _loading; _loading = true; cbKb.SelectedIndex = 1; _loading = l; StartRainbow(); }
+            if (_cfg.CustomActive) rCustom.Checked = true;      // → SetCustom()
         }
 
         // ------------------------------------------------------------------ действия
@@ -602,18 +649,40 @@ namespace Mrid6Helper
         {
             if (_loading) return;
             Touch();
-            if (cPower.Checked) DropCustomPower();      // свои лимиты = режим «Производительность»: сначала закрыть (плата вернёт прежний), потом писать режим
+            if (_custom) LeaveCustom();                 // сначала выйти из пользовательского режима (снимет лимиты, вернёт автоматику вентиляторов)
             _mode = mode;
             Mi.SetPerfMode(mode);
         }
 
-        /// <summary>Снять «свои лимиты»: закрыть на плате и убрать галочку (без записи обратно).</summary>
-        void DropCustomPower()
+        void SetCustom()
         {
-            bool l = _loading; _loading = true; cPower.Checked = false; _loading = l;
-            _cfg.CustomPower = false;
-            Mi.SetCustomPower(false, 0, 0, 0);
-            status.ForeColor = Color.MediumSeaGreen; status.Text = "Свои лимиты выключены — режим выбирается как обычно";
+            if (_loading) return;
+            Touch();
+            _custom = true; _cfg.CustomActive = true; _cfg.Save();
+            ReapplyCustom();
+        }
+
+        /// <summary>Применить пользовательский режим на плате: режим (или свои лимиты) и перезапуск управления вентиляторами.</summary>
+        void ReapplyCustom()
+        {
+            Touch();
+            if (cPower.Checked) ApplyPower(true);
+            else
+            {
+                Mi.Set(Mi.M_CPUPOWER, Mi.P_CLOSE);      // сначала закрыть лимиты (плата вернёт прежний режим), затем писать базовый
+                Mi.SetPerfMode(BaseMode); _mode = BaseMode;
+            }
+            RestartFan();
+            status.ForeColor = Color.MediumSeaGreen;
+            status.Text = "Пользовательский режим включён" + (cPower.Checked ? " (свои лимиты)" : "");
+        }
+
+        void LeaveCustom()
+        {
+            _custom = false; _cfg.CustomActive = false; _cfg.Save();
+            Mi.Set(Mi.M_FANFIXSW, 0);                   // вернуть вентиляторы автоматике платы
+            _fanSw = false; _fanOut = -1; _boosted = false;
+            if (cPower.Checked) Mi.SetCustomPower(false, 0, 0, 0);   // закрыть лимиты (галочку не трогаем — это настройка пользовательского режима)
         }
 
         void ApplyPower(bool save)
@@ -628,16 +697,59 @@ namespace Mrid6Helper
             status.Text = ok ? (_cfg.CustomPower ? string.Format("Лимиты применены: SPL {0} Вт, SPPT {1} Вт, стенка {2} °C", _cfg.Spl, _cfg.Sppt, _cfg.Wall) : "Свои лимиты выключены") : "Не удалось применить лимиты: " + Mi.LastError;
         }
 
-        void ApplyFan()
+        void RestartFan()
         {
-            Touch();
-            _cfg.FanFixed = cFan.Checked; _cfg.FanPct = tFan.Value; _cfg.HasFan = true; _cfg.Save();
-            if (_cfg.FanFixed)
+            _fanOut = -1; _fanSw = false; _fanClock = false; _fc.Reset(); _hotTicks = 0; _boosted = false;
+            if (cbFan.SelectedIndex == 1) Mi.Set(Mi.M_FANFIXSW, 0);     // автоматика платы
+        }
+
+        /// <summary>Исполнение выбранного способа управления вентиляторами (вызывается из опроса, ≈ раз в 1,5 с).</summary>
+        void FanTick(Snap s)
+        {
+            if (!_custom) return;
+            int kind = cbFan.SelectedIndex < 0 ? 0 : cbFan.SelectedIndex;
+            int cpu = s.CpuT, gpu = s.GpuT;
+            if (kind == 1) { lFanInfo.Text = "Вентиляторами управляет автоматика платы."; return; }
+            if (cpu <= 0 && gpu <= 0) return;                            // нет данных — не трогаем
+            double raw = Math.Max(cpu, gpu);
+            int nowMs = Environment.TickCount;
+            double dt = _fanClock ? unchecked(nowMs - _lastFanMs) / 1000.0 : 1.5;
+            _lastFanMs = nowMs; _fanClock = true;
+            int want = kind == 2 ? FixedWithGuard(cpu, gpu) : _fc.Step(raw, dt);
+            want = Cfg.Clamp(want, 20, 100);
+            if (!_fanSw) { Mi.Set(Mi.M_FANFIX, (byte)want); Mi.Set(Mi.M_FANFIXSW, 1); _fanSw = true; _fanOut = want; _fanChk = 0; }
+            else
             {
-                Mi.Set(Mi.M_FANFIX, (byte)(_boosted ? 100 : _cfg.FanPct));
-                Mi.Set(Mi.M_FANFIXSW, 1);
+                if (want != _fanOut) { Mi.Set(Mi.M_FANFIX, (byte)want); _fanOut = want; }
+                if (++_fanChk >= 8)
+                {   // раз в ~12 с проверяем, что плата не сбросила режим фиксированных оборотов
+                    _fanChk = 0;
+                    if (Mi.GetByte(Mi.M_FANFIXSW) != 1) { Mi.Set(Mi.M_FANFIX, (byte)want); Mi.Set(Mi.M_FANFIXSW, 1); }
+                }
             }
-            else { _boosted = false; Mi.Set(Mi.M_FANFIXSW, 0); }
+            if (kind == 0)
+            {
+                editor.CurT = _fc.SmoothT; editor.CurP = _fanOut; editor.Invalidate();
+                lFanInfo.Text = string.Format("Сейчас: {0:0.#} °C (сглаж.) → обороты {1} %, по кривой {2:0} %", _fc.SmoothT, _fanOut, _fc.Target);
+            }
+            else lFanInfo.Text = string.Format("Фиксированные обороты {0} %{1}", _fanOut, _boosted ? " — защита от перегрева" : "");
+        }
+
+        /// <summary>Фиксированные обороты с защитой: при CPU ≥ 90 / GPU ≥ 88 временно 100 %, возврат после остывания.</summary>
+        int FixedWithGuard(int cpu, int gpu)
+        {
+            bool hot = cpu >= 90 || gpu >= 88, cool = cpu < 82 && gpu < 80;
+            if (hot) _hotTicks++; else _hotTicks = 0;
+            if (!_boosted && hot && _hotTicks >= 2 && tFan.Value < 100)
+            {
+                _boosted = true; Log.Write("guard: boost cpu=" + cpu + " gpu=" + gpu);
+                status.ForeColor = Color.Orange; status.Text = "Защита: перегрев — обороты временно 100%";
+            }
+            else if (_boosted && cool)
+            {
+                _boosted = false; status.ForeColor = Color.MediumSeaGreen; status.Text = "Температура в норме — обороты " + tFan.Value + "%";
+            }
+            return _boosted ? 100 : tFan.Value;
         }
 
         /// <summary>Индекс списка: 0 «выкл» (яркость 0), 1 плавная радуга (программная), 2 один цвет, 3 собственный авто-режим платы.</summary>
@@ -790,9 +902,9 @@ namespace Mrid6Helper
                     switch (name)
                     {
                         case FnEvents.EV_PERF:
-                            if (unchecked(Environment.TickCount - _quiet) >= 0 && cPower.Checked)
-                            {   // нажали Fn+F10 при «своих лимитах»: снять лимиты и утвердить выбранный клавишей режим
-                                DropCustomPower(); Mi.SetPerfMode(val); Touch();
+                            if (_custom && unchecked(Environment.TickCount - _quiet) >= 0)
+                            {   // нажали Fn+F10 в пользовательском режиме: выходим из него и утверждаем выбранный клавишей режим
+                                LeaveCustom(); Mi.SetPerfMode(val); Touch();
                             }
                             SyncMode(val);
                             msg = "Режим: " + (val == 2 ? "Тихий" : val == 1 ? "Производительность" : "Баланс");
@@ -820,7 +932,7 @@ namespace Mrid6Helper
         {
             if (e.Mode == PowerModes.Resume)
             {
-                try { BeginInvoke((Action)delegate { if (cPower.Checked) ApplyPower(false); if (_cfg.HasFan && _cfg.FanFixed) ApplyFan(); }); } catch { }
+                try { BeginInvoke((Action)delegate { if (_custom) ReapplyCustom(); }); } catch { }
             }
         }
 
@@ -917,33 +1029,65 @@ namespace Mrid6Helper
                 Chk("  режим после записи цвета = «Один цвет»", Mi.GetByte(Mi.M_KBMODE) == 2, "");
 
                 Stage("подсветка");
-                // --- вентиляторы (только повышение / насыщенная область >= 60 %)
-                UI(delegate { tFan.Value = 80; cFan.Checked = true; ApplyFan(); }); Thread.Sleep(500);
-                int sw = Mi.GetByte(Mi.M_FANFIXSW), pc = Mi.GetByte(Mi.M_FANFIX);
-                Chk("фиксированные обороты: переключатель", sw == 1, "hw=" + sw);
-                Chk("фиксированные обороты: 80 %", pc == 80 || pc == 100, "hw=" + pc + (pc == 100 ? " (защита уже подняла)" : ""));
-                Thread.Sleep(7000);
-                int cpuT = 0, gpuT = 0; UI(delegate { cpuT = int.Parse(("0" + lCpu.Text.Replace(" °C", "")).Replace("—", "0")); gpuT = int.Parse(("0" + lGpu.Text.Replace(" °C", "")).Replace("—", "0")); });
-                int pc2 = Mi.GetByte(Mi.M_FANFIX);
-                bool stillWarm = cpuT >= 82 || gpuT >= 80;   // защита отпускает только после остывания (гистерезис)
-                Chk("защита от перегрева (100 % пока горячо, гистерезис)", stillWarm ? pc2 == 100 : pc2 == 80, string.Format("cpu={0} gpu={1} fan={2}%", cpuT, gpuT, pc2));
-                UI(delegate { cFan.Checked = false; }); Thread.Sleep(500);
-                Chk("возврат к автоматике вентиляторов", Mi.GetByte(Mi.M_FANFIXSW) == 0, "");
-                UI(delegate { _boosted = false; tFan.Value = Cfg.Clamp(oPct, 30, 100); cFan.Checked = oSw == 1; ApplyFan(); if (oSw != 1) Mi.Set(Mi.M_FANFIXSW, 0); }); Thread.Sleep(400);
+                // --- кривая вентиляторов: расчёты без железа
+                FanCurve cv = FanCurve.Preset(0);
+                Chk("кривая: значения в точках", Math.Abs(cv.Eval(cv.T[0]) - cv.P[0]) < 0.01 && Math.Abs(cv.Eval(cv.T[3]) - cv.P[3]) < 0.01, "");
+                Chk("кривая: линейная интерполяция", Math.Abs(cv.Eval((cv.T[1] + cv.T[2]) / 2) - (cv.P[1] + cv.P[2]) / 2) < 0.01, "");
+                Chk("кривая: защитный пол (40 °C → 20 %, 95 °C → 100 %)", Math.Abs(FanCurve.Floor(40) - 20) < 0.01 && Math.Abs(FanCurve.Floor(95) - 100) < 0.01, "");
+                FanCurve bad = FanCurve.Preset(1); bad.T[5] = 91; bad.P[5] = 25; bad.Normalize();
+                Chk("кривая: нельзя опустить ниже защитного пола", bad.P[5] >= FanCurve.Floor(bad.T[5]) - 0.01, "точка " + bad.T[5] + "→" + bad.P[5]);
+                Chk("кривая: сохранение и чтение", FanCurve.Parse(cv.Serialize()) != null && FanCurve.Parse(cv.Serialize()).Serialize() == cv.Serialize(), cv.Serialize());
+                FanController fk = new FanController { Curve = FanCurve.Preset(0), Smooth = 5 };
+                int lo = 999, hi = 0;
+                for (int i = 0; i < 160; i++) { int o = fk.Step(70 + 4 * Math.Sin(i * Math.PI / 3), 1.5); if (i >= 60) { lo = Math.Min(lo, o); hi = Math.Max(hi, o); } }
+                Chk("контроллер: шум ±4 °C не вызывает пульсаций оборотов", hi - lo <= 3, "диапазон " + lo + "…" + hi + " %");
+                fk.Reset(); int o50 = fk.Step(50, 1.5); int oUp = o50; for (int i = 0; i < 8; i++) oUp = fk.Step(88, 1.5);
+                Chk("контроллер: резкий рост температуры — обороты быстро растут", oUp >= o50 + 25, o50 + " → " + oUp + " %");
+                int oDn = oUp; for (int i = 0; i < 10; i++) oDn = fk.Step(50, 1.5);
+                Chk("контроллер: после спада обороты снижаются плавно (≤ ~1 %/с)", oUp - oDn <= 15 && oDn <= oUp, oUp + " → " + oDn + " % за 15 с");
+                fk.Reset(); fk.Step(60, 1.5);
+                Chk("контроллер: ≥ 92 °C — сразу 100 %", fk.Step(93, 1.5) == 100, "");
+                int ei = FanCurve.N - 1; double eT = 0, eP = 0;
+                UI(delegate { editor.SetPoint(ei, 91, 25); eT = editor.Curve.T[ei]; eP = editor.Curve.P[ei]; });
+                Chk("редактор: точку нельзя опустить ниже защитного пола", eP >= FanCurve.Floor(eT) - 0.01, eT + "→" + eP);
+                UI(delegate { editor.Curve = FanCurve.Preset(0); _fc.Curve = editor.Curve.Clone(); });
 
-                Stage("вентиляторы");
-                // --- лимиты питания (запись принимается; обратно не читается)
-                UI(delegate { cPower.Checked = true; }); Thread.Sleep(900);
-                Chk("свои лимиты: включение (плата приняла 4 записи)", _powerOk && _cfg.CustomPower, "ok=" + _powerOk);
-                Chk("  включение лимитов переводит плату в «Производительность»", Mi.GetByte(Mi.M_PERF) == 1, "hw=" + Mi.GetByte(Mi.M_PERF));
+                // --- пользовательский режим на железе
+                UI(delegate { cbBase.SelectedIndex = 0; cbFan.SelectedIndex = 0; });
+                UI(delegate { rCustom.Checked = true; }); Thread.Sleep(4500);
+                bool isCu = false; UI(delegate { isCu = _custom; });
+                Chk("кнопка «Свой»: пользовательский режим включился", isCu, "");
+                Chk("  базовый режим платы = «Баланс»", Mi.GetByte(Mi.M_PERF) == 0, "hw=" + Mi.GetByte(Mi.M_PERF));
+                int fsw = Mi.GetByte(Mi.M_FANFIXSW), fpc = Mi.GetByte(Mi.M_FANFIX);
+                Chk("  кривая управляет вентиляторами (плата в режиме процента)", fsw == 1, "sw=" + fsw);
+                Chk("  обороты по кривой в допустимых пределах 20–100 %", fpc >= 20 && fpc <= 100, "hw=" + fpc);
+                int rpm1 = 0; { int cc, gg; Mi.GetFans(out cc, out gg); rpm1 = cc; }
+                Chk("  кулер вращается", rpm1 > 500, "rpm=" + rpm1);
+                UI(delegate { cbBase.SelectedIndex = 1; }); Thread.Sleep(1800);
+                Chk("  базовый режим «Тихий» → плата", Mi.GetByte(Mi.M_PERF) == 2, "hw=" + Mi.GetByte(Mi.M_PERF));
+                UI(delegate { cbBase.SelectedIndex = 0; }); Thread.Sleep(1800);
+                Chk("  базовый режим «Баланс» → плата", Mi.GetByte(Mi.M_PERF) == 0, "hw=" + Mi.GetByte(Mi.M_PERF));
+                UI(delegate { tFan.Value = 80; cbFan.SelectedIndex = 2; }); Thread.Sleep(4000);
+                int s2 = Mi.GetByte(Mi.M_FANFIXSW), p2 = Mi.GetByte(Mi.M_FANFIX);
+                Chk("  фиксированные обороты: 80 % (или 100 % при защите)", s2 == 1 && (p2 == 80 || p2 == 100), "sw=" + s2 + " pct=" + p2);
+                UI(delegate { cbFan.SelectedIndex = 1; }); Thread.Sleep(3000);
+                Chk("  автоматика платы: фиксированный режим выключен", Mi.GetByte(Mi.M_FANFIXSW) == 0, "");
+                UI(delegate { cbFan.SelectedIndex = 0; }); Thread.Sleep(4000);
+                Chk("  возврат к кривой: управление включено снова", Mi.GetByte(Mi.M_FANFIXSW) == 1, "");
+                UI(delegate { cPower.Checked = true; }); Thread.Sleep(1800);
+                Chk("  свои лимиты в пользовательском режиме → плата в «Производительность»", _powerOk && Mi.GetByte(Mi.M_PERF) == 1, "ok=" + _powerOk + " hw=" + Mi.GetByte(Mi.M_PERF));
+                Thread.Sleep(3500);
+                Chk("  режим держится (нет прыжков)", Mi.GetByte(Mi.M_PERF) == 1, "");
+                UI(delegate { cPower.Checked = false; }); Thread.Sleep(1800);
+                Chk("  выключение лимитов возвращает базовый режим", Mi.GetByte(Mi.M_PERF) == 0, "hw=" + Mi.GetByte(Mi.M_PERF));
                 UI(delegate { rBal.Checked = true; }); Thread.Sleep(3500);
-                bool pwrOn = true; UI(delegate { pwrOn = cPower.Checked; });
-                Chk("выбор режима при своих лимитах: лимиты сняты, режим держится 3,5 с (нет «ракеты»)", Mi.GetByte(Mi.M_PERF) == 0 && !pwrOn, "hw=" + Mi.GetByte(Mi.M_PERF) + " галочка=" + pwrOn);
-                UI(delegate { cPower.Checked = true; }); Thread.Sleep(900);
-                UI(delegate { cPower.Checked = false; }); Thread.Sleep(900);
-                Chk("свои лимиты: выключение возвращает прежний режим", Mi.GetByte(Mi.M_PERF) == 0 && !_cfg.CustomPower, "hw=" + Mi.GetByte(Mi.M_PERF));
-                UI(delegate { rb[oMode >= 0 ? oMode : 0].Checked = true; }); Thread.Sleep(600);
+                bool stillCu = true; UI(delegate { stillCu = _custom; });
+                Chk("выход из пользовательского режима: вентиляторы — автоматика", Mi.GetByte(Mi.M_FANFIXSW) == 0 && !stillCu, "sw=" + Mi.GetByte(Mi.M_FANFIXSW));
+                Chk("  режим «Баланс» держится", Mi.GetByte(Mi.M_PERF) == 0, "hw=" + Mi.GetByte(Mi.M_PERF));
+                UI(delegate { rb[oMode >= 0 ? oMode : 0].Checked = true; }); Thread.Sleep(700);
+                Mi.Set(Mi.M_FANFIX, (byte)(oPct > 0 ? oPct : 100)); Mi.Set(Mi.M_FANFIXSW, (byte)(oSw == 1 ? 1 : 0));
 
+                Stage("вентиляторы и пользовательский режим");
                 Stage("лимиты питания");
                 // --- режим GPU (записать и сразу вернуть)
                 int tgt = oGpu == 0 ? 1 : 0;
@@ -1033,7 +1177,12 @@ namespace Mrid6Helper
             try
             {
                 if (_rainbow && s.HasStates && s.KbMode != 2) { StopRainbow(); _cfg.KbRainbow = false; Log.Write("rainbow: stopped, mode changed by hardware"); }
-                if (s.Mode >= 0 && s.Mode != _mode) { Log.Write("sync: mode " + _mode + " -> " + s.Mode); SyncMode(s.Mode); }
+                if (_custom)
+                {
+                    int exp = cPower.Checked ? 1 : BaseMode;
+                    if (s.Mode >= 0 && s.Mode != exp) { Log.Write("sync: custom left, hardware mode " + s.Mode + " (expected " + exp + ")"); LeaveCustom(); SyncMode(s.Mode); }
+                }
+                else if (s.Mode >= 0 && s.Mode != _mode) { Log.Write("sync: mode " + _mode + " -> " + s.Mode); SyncMode(s.Mode); }
                 if (!s.HasStates) return;
                 if (s.FnLock >= 0 && cFnLock.Checked != (s.FnLock == 1)) cFnLock.Checked = s.FnLock == 1;
                 if (s.Tp >= 0 && cTp.Checked != (s.Tp == 1)) cTp.Checked = s.Tp == 1;
@@ -1061,32 +1210,15 @@ namespace Mrid6Helper
             chart.Invalidate();
 
             int mx = Math.Max(s.CpuT, s.GpuT);
-            Icon ni = MakeIcon(mx, ModeColor(_mode), mx >= 90);
+            Icon ni = MakeIcon(mx, ModeColor(_custom ? 3 : _mode), mx >= 90);
             _tray.Icon = ni; if (_lastIcon != null) _lastIcon.Dispose(); _lastIcon = ni;
             _tray.Text = Trim63(string.Format("CPU {0}°  GPU {1}°\nКулеры {2}/{3}", s.CpuT, s.GpuT, s.FanC, s.FanG));
 
-            Guard(s);
+            FanTick(s);
         }
 
         static string Trim63(string t) { return t.Length > 63 ? t.Substring(0, 63) : t; }
         static Color TempColor(int t, int warn, int hot) { return t >= hot ? Color.Tomato : t >= warn ? Color.Orange : Color.FromArgb(230, 233, 238); }
-
-        // Защита фиксированных оборотов
-        void Guard(Snap s)
-        {
-            if (!cFan.Checked) return;
-            bool hot = s.CpuT >= 90 || s.GpuT >= 88;
-            bool cool = s.CpuT < 82 && s.GpuT < 80;
-            if (hot) _hotTicks++; else _hotTicks = 0;
-            if (!_boosted && hot && _hotTicks >= 2 && tFan.Value < 100)
-            {
-                _boosted = true; Mi.Set(Mi.M_FANFIX, 100); Log.Write("guard: boost cpu=" + s.CpuT + " gpu=" + s.GpuT); status.ForeColor = Color.Orange; status.Text = "Защита: перегрев — обороты временно 100%";
-            }
-            else if (_boosted && cool)
-            {
-                _boosted = false; Mi.Set(Mi.M_FANFIX, (byte)tFan.Value); status.ForeColor = Color.MediumSeaGreen; status.Text = "Температура в норме — обороты " + tFan.Value + "%";
-            }
-        }
 
         void PaintChart(object sender, PaintEventArgs e)
         {
@@ -1124,7 +1256,7 @@ namespace Mrid6Helper
         {
             if (!_quit && _cfg.CloseToTray && e.CloseReason == CloseReason.UserClosing) { e.Cancel = true; Hide(); return; }
             _quit = true; _rbOn = false;
-            try { if (_boosted && cFan.Checked) Mi.Set(Mi.M_FANFIX, (byte)tFan.Value); } catch { }   // снять защитный разгон при выходе
+            try { if (_custom) Mi.Set(Mi.M_FANFIXSW, 0); } catch { }   // вернуть вентиляторы автоматике платы при выходе
             try { SystemEvents.PowerModeChanged -= OnPower; } catch { }
             try { _fn.Dispose(); } catch { }
             try { _tray.Visible = false; _tray.Dispose(); } catch { }
