@@ -15,7 +15,8 @@ namespace Mrid6Helper
     /// <summary>Настройки приложения (простой key=value в %APPDATA%\Mrid6Helper\settings.ini)</summary>
     sealed class Cfg
     {
-        public bool CustomPower;
+        public bool CustomPower;               // только на время сеанса: по умолчанию всегда «авто»
+        public bool KbRainbow;                 // последний выбор подсветки — программная радуга
         public int Spl = 101, Sppt = 105, Wall = 99;           // пределы вендора: SPL 95..105, SPPT 105..120, стенка 89..100
         public bool FanFixed;
         public int FanPct = 60;
@@ -44,7 +45,7 @@ namespace Mrid6Helper
                     int n; bool b = v == "1" || v.ToLowerInvariant() == "true";
                     switch (k)
                     {
-                        case "CustomPower": c.CustomPower = b; break;
+                        case "KbRainbow": c.KbRainbow = b; break;
                         case "Spl": if (int.TryParse(v, out n)) c.Spl = n; break;
                         case "Sppt": if (int.TryParse(v, out n)) c.Sppt = n; break;
                         case "Wall": if (int.TryParse(v, out n)) c.Wall = n; break;
@@ -66,7 +67,7 @@ namespace Mrid6Helper
             if (NoSave) return;
             try
             {
-                List<string> lines = new List<string> { "CustomPower=" + (CustomPower ? 1 : 0), "Spl=" + Spl, "Sppt=" + Sppt, "Wall=" + Wall,
+                List<string> lines = new List<string> { "KbRainbow=" + (KbRainbow ? 1 : 0), "Spl=" + Spl, "Sppt=" + Sppt, "Wall=" + Wall,
                     "Osd=" + (Osd ? 1 : 0), "CloseToTray=" + (CloseToTray ? 1 : 0) };
                 if (HasFan) { lines.Add("FanFixed=" + (FanFixed ? 1 : 0)); lines.Add("FanPct=" + FanPct); }   // только явный выбор пользователя
                 File.WriteAllText(PathFile(), string.Join(Environment.NewLine, lines.ToArray()));
@@ -290,7 +291,7 @@ namespace Mrid6Helper
 
             // --- Лимиты питания ---
             TableLayoutPanel b3; GroupBox g3 = Group("Лимиты питания CPU", out b3);
-            Flat(cPower); cPower.Text = "Использовать свои лимиты";
+            Flat(cPower); cPower.Text = "Свои лимиты (включают режим «Производительность»)";
             Row(b3, cPower);
             TableLayoutPanel t3 = Grid(3, LabelW, 0, 52);
             Slider(t3, "SPL, Вт", tSpl, vSpl, 95, 105);
@@ -321,7 +322,7 @@ namespace Mrid6Helper
             TableLayoutPanel b5; GroupBox g5 = Group("Клавиатура и светодиоды  (Fn+F9)", out b5);
             TableLayoutPanel t5 = Grid(2, LabelW, 0);
             cbKb.DropDownStyle = ComboBoxStyle.DropDownList; cbKb.FlatStyle = FlatStyle.Flat; cbKb.BackColor = Panel2; cbKb.ForeColor = Fg;
-            cbKb.Items.AddRange(new object[] { "Выкл (яркость 0)", "Радуга", "Один цвет" });
+            cbKb.Items.AddRange(new object[] { "Выкл (яркость 0)", "Радуга (плавная)", "Один цвет", "Авто-режим платы" });
             cbKb.SelectedIndexChanged += delegate { if (!_loading && cbKb.SelectedIndex >= 0) SetKbMode(cbKb.SelectedIndex); };
             Pair(t5, "Режим подсветки", cbKb);
             tBright.Minimum = 0; tBright.Maximum = 3; tBright.TickFrequency = 1; tBright.AutoSize = false; tBright.Height = 34; tBright.BackColor = Bg;
@@ -567,7 +568,7 @@ namespace Mrid6Helper
                 v = Mi.GetByte(Mi.M_AMBIENT); if (v >= 0) cAmb.Checked = v == 1;
                 v = Mi.GetByte(Mi.M_GPUMODE); if (v >= 0 && v < cbGpu.Items.Count) cbGpu.SelectedIndex = v;
 
-                cPower.Checked = _cfg.CustomPower; tSpl.Value = _cfg.Spl; tSppt.Value = _cfg.Sppt; tWall.Value = _cfg.Wall;
+                cPower.Checked = false; tSpl.Value = _cfg.Spl; tSppt.Value = _cfg.Sppt; tWall.Value = _cfg.Wall;
                 // вентиляторы: если пользователь не сохранял выбор — берём реальное состояние железа
                 if (!_cfg.HasFan)
                 {
@@ -591,8 +592,9 @@ namespace Mrid6Helper
 
         void ApplyStartup()
         {
-            if (_cfg.CustomPower) ApplyPower(false);
+            Mi.Set(Mi.M_CPUPOWER, Mi.P_CLOSE);          // по умолчанию — авто: свои лимиты закрыты (проверено: на нативный режим не влияет)
             if (_cfg.HasFan && _cfg.FanFixed) ApplyFan();
+            if (_cfg.KbRainbow) { bool l = _loading; _loading = true; cbKb.SelectedIndex = 1; _loading = l; StartRainbow(); }
         }
 
         // ------------------------------------------------------------------ действия
@@ -600,24 +602,28 @@ namespace Mrid6Helper
         {
             if (_loading) return;
             Touch();
+            if (cPower.Checked) DropCustomPower();      // свои лимиты = режим «Производительность»: сначала закрыть (плата вернёт прежний), потом писать режим
             _mode = mode;
             Mi.SetPerfMode(mode);
-            if (_cfg.CustomPower) DelayedReapply();
         }
 
-        System.Windows.Forms.Timer _reapplyT;
-        void DelayedReapply()
+        /// <summary>Снять «свои лимиты»: закрыть на плате и убрать галочку (без записи обратно).</summary>
+        void DropCustomPower()
         {
-            if (_reapplyT == null) { _reapplyT = new System.Windows.Forms.Timer { Interval = 1500 }; _reapplyT.Tick += delegate { _reapplyT.Stop(); ApplyPower(false); }; }
-            _reapplyT.Stop(); _reapplyT.Start();
+            bool l = _loading; _loading = true; cPower.Checked = false; _loading = l;
+            _cfg.CustomPower = false;
+            Mi.SetCustomPower(false, 0, 0, 0);
+            status.ForeColor = Color.MediumSeaGreen; status.Text = "Свои лимиты выключены — режим выбирается как обычно";
         }
 
         void ApplyPower(bool save)
         {
+            Touch();
             _cfg.CustomPower = cPower.Checked; _cfg.Spl = tSpl.Value; _cfg.Sppt = tSppt.Value; _cfg.Wall = tWall.Value;
             if (save) _cfg.Save();
             bool ok = Mi.SetCustomPower(_cfg.CustomPower, _cfg.Wall, _cfg.Spl, _cfg.Sppt);
             _powerOk = ok;
+            if (ok) { Thread.Sleep(250); SyncMode(Mi.GetByte(Mi.M_PERF)); }   // плата сама меняет режим: включение → «Производительность», выключение → прежний
             status.ForeColor = ok ? Color.MediumSeaGreen : Color.Tomato;
             status.Text = ok ? (_cfg.CustomPower ? string.Format("Лимиты применены: SPL {0} Вт, SPPT {1} Вт, стенка {2} °C", _cfg.Spl, _cfg.Sppt, _cfg.Wall) : "Свои лимиты выключены") : "Не удалось применить лимиты: " + Mi.LastError;
         }
@@ -634,15 +640,61 @@ namespace Mrid6Helper
             else { _boosted = false; Mi.Set(Mi.M_FANFIXSW, 0); }
         }
 
-        /// <summary>Индекс списка подсветки: 0 «выкл» (яркость 0), 1 радуга, 2 один цвет.</summary>
-        static int KbIndex(int mode, int bright) { return bright == 0 ? 0 : (mode == 1 ? 1 : 2); }
+        /// <summary>Индекс списка: 0 «выкл» (яркость 0), 1 плавная радуга (программная), 2 один цвет, 3 собственный авто-режим платы.</summary>
+        int KbIndex(int mode, int bright) { return bright == 0 ? 0 : (_rainbow ? 1 : (mode == 1 ? 3 : 2)); }
 
-        /// <summary>Плата принимает только режимы 1 (радуга) и 2 (один цвет); «выкл» — это яркость 0.
+        // --- плавная радуга: плата сама ничего не анимирует, поэтому перебираем оттенок через цветовой регистр
+        Thread _rb;
+        volatile bool _rbOn;
+        bool _rainbow;
+
+        static void Hsv(double h, out byte r, out byte g, out byte b)
+        {
+            double c = 1.0, x = c * (1 - Math.Abs((h / 60.0) % 2 - 1)); double r1 = 0, g1 = 0, b1 = 0;
+            if (h < 60) { r1 = c; g1 = x; } else if (h < 120) { r1 = x; g1 = c; } else if (h < 180) { g1 = c; b1 = x; }
+            else if (h < 240) { g1 = x; b1 = c; } else if (h < 300) { r1 = x; b1 = c; } else { r1 = c; b1 = x; }
+            r = (byte)Math.Round(r1 * 255); g = (byte)Math.Round(g1 * 255); b = (byte)Math.Round(b1 * 255);
+        }
+
+        void RainbowLoop()
+        {
+            double h = 0;
+            while (_rbOn && !_quit)
+            {
+                byte r, g, b; Hsv(h, out r, out g, out b);
+                if (!Mi.Set(Mi.M_KBCOLOR, r, g, b)) Thread.Sleep(400);
+                h += 2.4; if (h >= 360) h -= 360;               // полный круг ≈ 14 с
+                Thread.Sleep(80);
+            }
+        }
+
+        void StartRainbow()
+        {
+            StopRainbow();
+            Touch();
+            Mi.Set(Mi.M_KBMODE, 2);
+            if (Mi.GetByte(Mi.M_KBBRIGHT) == 0) { Mi.Set(Mi.M_KBBRIGHT, 3); bool l = _loading; _loading = true; tBright.Value = 3; _loading = l; }
+            _rainbow = true; _rbOn = true;
+            _rb = new Thread(delegate () { Thread.Sleep(500); RainbowLoop(); }) { IsBackground = true, Name = "rainbow" };   // 500 мс после режима — как у вендора
+            _rb.Start();
+        }
+
+        void StopRainbow()
+        {
+            _rbOn = false; _rainbow = false;
+            Thread t = _rb; _rb = null;
+            if (t != null && t.IsAlive) t.Join(600);
+        }
+
+        /// <summary>«Выкл» = яркость 0 (плата игнорирует режим 0). Режимы платы — 1 (авто) и 2 (один цвет).
         /// При яркости 0 любой режим невидим — поднимаем яркость до максимума.</summary>
         void SetKbMode(int index)
         {
             Touch();
-            string note = ""; bool ok;
+            string note = ""; bool ok = true;
+            _cfg.KbRainbow = index == 1; _cfg.Save();
+            if (index == 1) { StartRainbow(); status.ForeColor = Color.MediumSeaGreen; status.Text = "Подсветка: плавная радуга (работает, пока запущено приложение)"; return; }
+            StopRainbow();
             if (index == 0)
             {
                 ok = Mi.Set(Mi.M_KBBRIGHT, 0);
@@ -650,8 +702,14 @@ namespace Mrid6Helper
             }
             else
             {
-                ok = Mi.Set(Mi.M_KBMODE, (byte)index);
-                if (ok && Mi.GetByte(Mi.M_KBMODE) != index) { ok = false; Mi.LastError = "плата не приняла режим " + index; }
+                int hwMode = index == 3 ? 1 : 2;
+                ok = Mi.Set(Mi.M_KBMODE, (byte)hwMode);
+                for (int attempt = 0; attempt < 3 && ok && Mi.GetByte(Mi.M_KBMODE) != hwMode; attempt++)
+                {   // сразу после записи цвета плата может проигнорировать смену режима — повторяем с паузой
+                    Thread.Sleep(600); ok = Mi.Set(Mi.M_KBMODE, (byte)hwMode);
+                }
+                if (ok && Mi.GetByte(Mi.M_KBMODE) != hwMode) { ok = false; Mi.LastError = "плата не приняла режим " + hwMode; }
+                if (ok && hwMode == 2) Mi.Set(Mi.M_KBCOLOR, _kbColor.R, _kbColor.G, _kbColor.B);     // вернуть выбранный цвет после радуги
                 if (ok && Mi.GetByte(Mi.M_KBBRIGHT) == 0)
                 {
                     Mi.Set(Mi.M_KBBRIGHT, 3);
@@ -668,6 +726,7 @@ namespace Mrid6Helper
             using (ColorDialog d = new ColorDialog { Color = _kbColor, FullOpen = true })
             {
                 if (d.ShowDialog(this) != DialogResult.OK) return;
+                StopRainbow(); _cfg.KbRainbow = false; _cfg.Save();
                 _kbColor = d.Color; bColor.BackColor = _kbColor; bColor.ForeColor = (_kbColor.R + _kbColor.G + _kbColor.B) > 380 ? Color.Black : Color.White;
                 Color cc = _kbColor;
                 ThreadPool.QueueUserWorkItem(delegate { Mi.SetKbColor(cc.R, cc.G, cc.B); });   // пауза 500 мс между режимом и цветом — как у вендора
@@ -731,14 +790,18 @@ namespace Mrid6Helper
                     switch (name)
                     {
                         case FnEvents.EV_PERF:
+                            if (unchecked(Environment.TickCount - _quiet) >= 0 && cPower.Checked)
+                            {   // нажали Fn+F10 при «своих лимитах»: снять лимиты и утвердить выбранный клавишей режим
+                                DropCustomPower(); Mi.SetPerfMode(val); Touch();
+                            }
                             SyncMode(val);
                             msg = "Режим: " + (val == 2 ? "Тихий" : val == 1 ? "Производительность" : "Баланс");
-                            if (_cfg.CustomPower) DelayedReapply();
                             break;
                         case FnEvents.EV_KBBRIGHT:
                             { bool l = _loading; _loading = true; tBright.Value = Cfg.Clamp(val, 0, 3); cbKb.SelectedIndex = KbIndex(Mi.GetByte(Mi.M_KBMODE), val); _loading = l; }
                             msg = "Яркость подсветки: " + val; break;
                         case FnEvents.EV_KBMODE:
+                            if (_rainbow && unchecked(Environment.TickCount - _quiet) >= 0) { StopRainbow(); _cfg.KbRainbow = false; }
                             { bool l = _loading; _loading = true; cbKb.SelectedIndex = KbIndex(val, tBright.Value); _loading = l; }
                             msg = "Подсветка: " + (val == 1 ? "радуга" : val == 2 ? "один цвет" : "режим " + val); break;
                         case FnEvents.EV_TOUCHPAD:
@@ -757,7 +820,7 @@ namespace Mrid6Helper
         {
             if (e.Mode == PowerModes.Resume)
             {
-                try { BeginInvoke((Action)delegate { DelayedReapply(); if (_cfg.HasFan && _cfg.FanFixed) ApplyFan(); }); } catch { }
+                try { BeginInvoke((Action)delegate { if (cPower.Checked) ApplyPower(false); if (_cfg.HasFan && _cfg.FanFixed) ApplyFan(); }); } catch { }
             }
         }
 
@@ -789,6 +852,8 @@ namespace Mrid6Helper
                 // --- интерфейс и датчики
                 Chk("WMI-интерфейс платы отвечает", oMode >= 0, "mode=" + oMode);
                 Chk("слежение за Fn-событиями запущено (HID_EVENT20)", _fnStarted, "");
+                bool pw0 = true; UI(delegate { pw0 = cPower.Checked; });
+                Chk("по умолчанию «свои лимиты» выключены (авто)", !pw0, "");
                 string t0 = null, t1 = null, t2 = null, t3 = null, t4 = null;
                 UI(delegate { t0 = lCpu.Text; t1 = lGpu.Text; t2 = lFanC.Text; t3 = lFanG.Text; t4 = lCpuLoad.Text; });
                 Chk("датчик CPU", t0 != "—", t0); Chk("датчик GPU", t1 != "—", t1);
@@ -823,11 +888,23 @@ namespace Mrid6Helper
                 for (int b = 3; b >= 0; b--) { int bb = b; UI(delegate { tBright.Value = bb; }); Thread.Sleep(350); Chk("яркость подсветки " + b, Mi.GetByte(Mi.M_KBBRIGHT) == b, "hw=" + Mi.GetByte(Mi.M_KBBRIGHT)); }
                 UI(delegate { tBright.Value = 0; }); Thread.Sleep(350);
                 int kbi = -1; UI(delegate { kbi = cbKb.SelectedIndex; }); Chk("список подсветки показывает «Выкл» при яркости 0", kbi == 0, "index=" + kbi);
-                UI(delegate { cbKb.SelectedIndex = 1; }); Thread.Sleep(900);
-                Chk("режим подсветки: Радуга → плата", Mi.GetByte(Mi.M_KBMODE) == 1, "hw=" + Mi.GetByte(Mi.M_KBMODE));
+                UI(delegate { cbKb.SelectedIndex = 3; }); Thread.Sleep(900);
+                Chk("режим подсветки: авто-режим платы → плата", Mi.GetByte(Mi.M_KBMODE) == 1, "hw=" + Mi.GetByte(Mi.M_KBMODE));
                 Chk("  при яркости 0 яркость поднялась до 3", Mi.GetByte(Mi.M_KBBRIGHT) == 3, "bright=" + Mi.GetByte(Mi.M_KBBRIGHT));
                 Thread.Sleep(2500);
-                Chk("  Радуга не слетает после опроса", Mi.GetByte(Mi.M_KBMODE) == 1, "");
+                Chk("  авто-режим платы не слетает после опроса", Mi.GetByte(Mi.M_KBMODE) == 1, "");
+                // плавная радуга: цветовой регистр должен непрерывно меняться
+                UI(delegate { cbKb.SelectedIndex = 1; }); Thread.Sleep(1500);
+                List<string> cols = new List<string>();
+                for (int q = 0; q < 6; q++) { cols.Add(Mi.Hex(Cut3())); Thread.Sleep(450); }
+                int distinct = new HashSet<string>(cols).Count;
+                Chk("плавная радуга: цвет непрерывно меняется", distinct >= 5, "разных значений за 2,7 с: " + distinct + " из 6 (" + cols[0] + " → " + cols[5] + ")");
+                Chk("  радуга идёт в режиме «один цвет» платы", Mi.GetByte(Mi.M_KBMODE) == 2, "hw=" + Mi.GetByte(Mi.M_KBMODE));
+                Thread.Sleep(2500);
+                Chk("  радуга не слетает после опроса", cols.Count > 0 && new HashSet<string>(new string[] { Mi.Hex(Cut3()), cols[5] }).Count == 2, "");
+                UI(delegate { cbKb.SelectedIndex = 2; }); Thread.Sleep(900);
+                string c1 = Mi.Hex(Cut3()); Thread.Sleep(1300); string c2 = Mi.Hex(Cut3());
+                Chk("после выбора «Один цвет» радуга остановлена", c1 == c2, c1 + " / " + c2);
                 UI(delegate { cbKb.SelectedIndex = 2; }); Thread.Sleep(800);
                 Chk("режим подсветки: Один цвет → плата", Mi.GetByte(Mi.M_KBMODE) == 2, "hw=" + Mi.GetByte(Mi.M_KBMODE));
                 UI(delegate { cbKb.SelectedIndex = 0; }); Thread.Sleep(800);
@@ -856,10 +933,16 @@ namespace Mrid6Helper
 
                 Stage("вентиляторы");
                 // --- лимиты питания (запись принимается; обратно не читается)
-                UI(delegate { cPower.Checked = true; }); Thread.Sleep(600);
+                UI(delegate { cPower.Checked = true; }); Thread.Sleep(900);
                 Chk("свои лимиты: включение (плата приняла 4 записи)", _powerOk && _cfg.CustomPower, "ok=" + _powerOk);
-                UI(delegate { cPower.Checked = false; }); Thread.Sleep(600);
-                Chk("свои лимиты: выключение", _powerOk && !_cfg.CustomPower, "ok=" + _powerOk);
+                Chk("  включение лимитов переводит плату в «Производительность»", Mi.GetByte(Mi.M_PERF) == 1, "hw=" + Mi.GetByte(Mi.M_PERF));
+                UI(delegate { rBal.Checked = true; }); Thread.Sleep(3500);
+                bool pwrOn = true; UI(delegate { pwrOn = cPower.Checked; });
+                Chk("выбор режима при своих лимитах: лимиты сняты, режим держится 3,5 с (нет «ракеты»)", Mi.GetByte(Mi.M_PERF) == 0 && !pwrOn, "hw=" + Mi.GetByte(Mi.M_PERF) + " галочка=" + pwrOn);
+                UI(delegate { cPower.Checked = true; }); Thread.Sleep(900);
+                UI(delegate { cPower.Checked = false; }); Thread.Sleep(900);
+                Chk("свои лимиты: выключение возвращает прежний режим", Mi.GetByte(Mi.M_PERF) == 0 && !_cfg.CustomPower, "hw=" + Mi.GetByte(Mi.M_PERF));
+                UI(delegate { rb[oMode >= 0 ? oMode : 0].Checked = true; }); Thread.Sleep(600);
 
                 Stage("лимиты питания");
                 // --- режим GPU (записать и сразу вернуть)
@@ -882,9 +965,10 @@ namespace Mrid6Helper
 
                 Stage("автозапуск/OSD");
                 // --- возврат исходного состояния
-                UI(delegate { cbKb.SelectedIndex = oKb >= 0 ? oKb : 2; }); Thread.Sleep(700);
+                UI(delegate { StopRainbow(); cbKb.SelectedIndex = (oKb == 1 ? 3 : 2); }); Thread.Sleep(700);
                 Mi.SetKbColor(r0, g0, b0);
-                Mi.Set(Mi.M_KBMODE, (byte)(oKb >= 0 ? oKb : 2));
+                for (int at = 0; at < 4 && Mi.GetByte(Mi.M_KBMODE) != (oKb >= 0 ? oKb : 2); at++) { Thread.Sleep(700); Mi.Set(Mi.M_KBMODE, (byte)(oKb >= 0 ? oKb : 2)); }
+                Mi.Set(Mi.M_FANFIX, (byte)(oPct > 0 ? oPct : 100));
                 UI(delegate { tBright.Value = Cfg.Clamp(oBr, 0, 3); });
                 Thread.Sleep(400);
                 Info(string.Format("возвращено: kb={0} bright={1} rgb={2} mode={3} fanSw={4} fanPct={5}", Mi.GetByte(Mi.M_KBMODE), Mi.GetByte(Mi.M_KBBRIGHT), Mi.Hex(Cut3()), Mi.GetByte(Mi.M_PERF), Mi.GetByte(Mi.M_FANFIXSW), Mi.GetByte(Mi.M_FANFIX)));
@@ -948,6 +1032,7 @@ namespace Mrid6Helper
             bool l = _loading; _loading = true;
             try
             {
+                if (_rainbow && s.HasStates && s.KbMode != 2) { StopRainbow(); _cfg.KbRainbow = false; Log.Write("rainbow: stopped, mode changed by hardware"); }
                 if (s.Mode >= 0 && s.Mode != _mode) { Log.Write("sync: mode " + _mode + " -> " + s.Mode); SyncMode(s.Mode); }
                 if (!s.HasStates) return;
                 if (s.FnLock >= 0 && cFnLock.Checked != (s.FnLock == 1)) cFnLock.Checked = s.FnLock == 1;
@@ -1038,7 +1123,7 @@ namespace Mrid6Helper
         void OnClosing(object s, FormClosingEventArgs e)
         {
             if (!_quit && _cfg.CloseToTray && e.CloseReason == CloseReason.UserClosing) { e.Cancel = true; Hide(); return; }
-            _quit = true;
+            _quit = true; _rbOn = false;
             try { if (_boosted && cFan.Checked) Mi.Set(Mi.M_FANFIX, (byte)tFan.Value); } catch { }   // снять защитный разгон при выходе
             try { SystemEvents.PowerModeChanged -= OnPower; } catch { }
             try { _fn.Dispose(); } catch { }
