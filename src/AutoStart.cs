@@ -93,6 +93,53 @@ namespace Mrid6Helper
             return c == 0 || !Exists() ? null : "код " + c + ": " + o.Trim();
         }
 
+        // ---- задача «Открыть» (по требованию): ярлык запускает её через schtasks, поэтому на ярлыке нет щита UAC и нет запроса прав.
+        public const string OpenTaskName = "Mrid6Helper-Open";
+
+        public static bool OpenTaskExists() { int c; Run("/Query /TN " + OpenTaskName, out c); return c == 0; }
+
+        public static string InstallOpenTask(string exe)
+        {
+            string user = System.Security.Principal.WindowsIdentity.GetCurrent().Name;
+            string xml =
+"<?xml version=\"1.0\" encoding=\"UTF-16\"?>\r\n" +
+"<Task version=\"1.2\" xmlns=\"http://schemas.microsoft.com/windows/2004/02/mit/task\">\r\n" +
+"  <RegistrationInfo><Description>MRID6 Helper: открыть окно (запуск по требованию с повышенными правами, без запроса UAC)</Description></RegistrationInfo>\r\n" +
+"  <Principals><Principal id=\"Author\"><UserId>" + SecurityElement.Escape(user) + "</UserId><LogonType>InteractiveToken</LogonType><RunLevel>HighestAvailable</RunLevel></Principal></Principals>\r\n" +
+"  <Settings>\r\n" +
+"    <MultipleInstancesPolicy>Parallel</MultipleInstancesPolicy>\r\n" +
+"    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>\r\n" +
+"    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>\r\n" +
+"    <AllowHardTerminate>true</AllowHardTerminate>\r\n" +
+"    <AllowStartOnDemand>true</AllowStartOnDemand>\r\n" +
+"    <Enabled>true</Enabled>\r\n" +
+"    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>\r\n" +
+"    <Priority>6</Priority>\r\n" +
+"  </Settings>\r\n" +
+"  <Actions Context=\"Author\"><Exec><Command>" + SecurityElement.Escape(exe) + "</Command></Exec></Actions>\r\n" +
+"</Task>\r\n";
+            string tmp = Path.Combine(Path.GetTempPath(), "mrid6-open-" + Guid.NewGuid().ToString("N") + ".xml");
+            try
+            {
+                File.WriteAllText(tmp, xml, Encoding.Unicode);
+                int c; string o = Run("/Create /TN " + OpenTaskName + " /XML \"" + tmp + "\" /F", out c);
+                return c == 0 ? null : "код " + c + ": " + o.Trim();
+            }
+            catch (Exception ex) { return ex.Message; }
+            finally { try { File.Delete(tmp); } catch { } }
+        }
+
+        /// <summary>Создать задачу «Открыть», если её нет или она указывает на другой exe.</summary>
+        public static void EnsureOpenTask(string exe)
+        {
+            try
+            {
+                int c; string x = Run("/Query /TN " + OpenTaskName + " /XML", out c);
+                if (c != 0 || x.IndexOf(exe, StringComparison.OrdinalIgnoreCase) < 0) InstallOpenTask(exe);
+            }
+            catch { }
+        }
+
         // ---- умышленный выход: не воскрешать до следующей загрузки Windows
         static string MarkerPath()
         {

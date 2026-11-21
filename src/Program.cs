@@ -108,6 +108,7 @@ namespace Mrid6Helper
                     File.WriteAllText(Path.Combine(Path.GetTempPath(), "mrid6-autostart.txt"), e ?? "ok", Encoding.UTF8);
                     return e == null ? 0 : 1;
                 }
+                if (args[i] == "--install-open-task") { string e2 = AutoStart.InstallOpenTask(Application.ExecutablePath); File.WriteAllText(Path.Combine(Path.GetTempPath(), "mrid6-opentask.txt"), e2 ?? "ok", Encoding.UTF8); return e2 == null ? 0 : 1; }
                 if (args[i] == "--mark-exit") { AutoStart.MarkExit(); return 0; }
                 if (args[i] == "--clear-exit") { AutoStart.ClearExitMark(); return 0; }
                 if (args[i] == "--script" && i + 2 < args.Length) { Lab.Run(args[i + 1], args[i + 2]); return 0; }

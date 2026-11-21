@@ -515,6 +515,11 @@ namespace Mrid6Helper
         protected override void OnShown(EventArgs e)
         {
             base.OnShown(e);
+            if (ShotPath == null && SelfTestPath == null)
+            {   // по умолчанию окно растянуто на всю высоту рабочей области экрана, по центру по горизонтали
+                Rectangle wa = Screen.FromControl(this).WorkingArea;
+                Bounds = new Rectangle(wa.Left + (wa.Width - Width) / 2, wa.Top, Width, wa.Height);
+            }
             FitAll();
             if (SelfTestPath != null) { _selfTest = true; _cfg.NoSave = true; new Thread(RunSelfTest) { IsBackground = true, Name = "selftest" }.Start(); return; }
             if (ShotPath == null) return;
@@ -638,6 +643,7 @@ namespace Mrid6Helper
 
         void ApplyStartup()
         {
+            ThreadPool.QueueUserWorkItem(delegate { AutoStart.EnsureOpenTask(Application.ExecutablePath); });   // задача для ярлыка без щита UAC
             Mi.Set(Mi.M_CPUPOWER, Mi.P_CLOSE);          // по умолчанию — авто: свои лимиты закрыты (проверено: на нативный режим не влияет)
             Mi.Set(Mi.M_FANFIXSW, 0);                   // вентиляторы — автоматика платы, пока не выбран пользовательский режим
             if (_cfg.KbRainbow) { bool l = _loading; _loading = true; cbKb.SelectedIndex = 1; _loading = l; StartRainbow(); }
