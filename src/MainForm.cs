@@ -251,9 +251,6 @@ namespace Mrid6Helper
         double _kbScale = 1;                 // множитель цвета внутри ступени
         int _hwLvl = -1, _kbHwMode = 2;      // ступень и режим платы, как мы их знаем
         int _ownLevel = -1, _ownTick;        // последняя наша запись ступени (чтобы отличить своё событие от клавиши)
-        int _fnbTick, _fnbCount, _lastEcTick, _rampDir = 1;
-        bool _ramping;
-        System.Windows.Forms.Timer _rampTimer;
 
         sealed class DoubleBufferedPanel : Panel { public DoubleBufferedPanel() { DoubleBuffered = true; ResizeRedraw = true; } }
 
@@ -648,9 +645,9 @@ namespace Mrid6Helper
                 _kbHwMode = kbm >= 0 ? kbm : 2; _hwLvl = kbb;
                 if (kbb >= 0)
                 {
-                    _vb = (_cfg.KbVb >= 0 && LevelFor(_cfg.KbVb) == kbb) ? _cfg.KbVb : kbb * 100.0 / 3.0;
+                    _vb = (_cfg.KbVb >= 0 && LevelFor(_cfg.KbVb) == kbb) ? _cfg.KbVb : VbForLevel(kbb);
                     tBright.Value = Cfg.Clamp((int)Math.Round(_vb), 0, 100);
-                    _kbScale = kbb == 0 ? 1.0 : Math.Min(1.0, _vb / (kbb * 100.0 / 3.0));
+                    _kbScale = kbb == 0 ? 1.0 : Math.Min(1.0, LumFor(_vb) / LvlLum[kbb]);
                 }
                 if (kbm >= 0 && kbb >= 0) cbKb.SelectedIndex = KbIndex(kbm, kbb);
                 byte r, g, b;
@@ -808,66 +805,50 @@ namespace Mrid6Helper
         /// <summary>Индекс списка: 0 «выкл» (ступень 0), 1 плавная радуга (программная), 2 один цвет, 3 собственный авто-режим платы.</summary>
         int KbIndex(int mode, int level) { return level == 0 ? 0 : (_rainbow ? 1 : (mode == 1 ? 3 : 2)); }
 
-        // ---------------------------------------------------------------- плавная яркость
-        static int LevelFor(double vb) { if (vb <= 0.5) return 0; return Cfg.Clamp((int)Math.Ceiling((vb - 0.4) / 33.3334 - 1e-9), 1, 3); }   // 67 % ≡ ступень 2 (допуск на округление)
+        // ---------------------------------------------------------------- яркость подсветки
+        // Плата умеет 4 ступени (0 / 40 / 70 / 100 % по данным вендора). Ползунок 0–100 % — это ВОСПРИНИМАЕМАЯ яркость (гамма 2):
+        // световой поток = (ползунок/100)^2; берётся наименьшая ступень платы, которой хватает, остальное — масштаб цвета в регистре 0x11.
+        static readonly double[] LvlLum = { 0.0, 0.40, 0.70, 1.0 };
+        const double Gamma = 2.0;
+        static double LumFor(double vb) { return Math.Pow(Math.Max(0, Math.Min(100, vb)) / 100.0, Gamma); }
+        static int LevelFor(double vb)
+        {
+            if (vb <= 0.5) return 0;
+            double l = LumFor(vb);
+            for (int k = 1; k <= 3; k++) if (l <= LvlLum[k] + 1e-6) return k;
+            return 3;
+        }
+        static double VbForLevel(int level) { return 100.0 * Math.Pow(LvlLum[Cfg.Clamp(level, 0, 3)], 1.0 / Gamma); }   // положение ползунка, соответствующее ступени платы
         static Color ScaleColor(Color c, double k) { return Color.FromArgb((int)Math.Round(c.R * k), (int)Math.Round(c.G * k), (int)Math.Round(c.B * k)); }
         void WriteScaledColor() { Color c = ScaleColor(_kbColor, _kbScale); Mi.Set(Mi.M_KBCOLOR, c.R, c.G, c.B); }
 
-        /// <summary>Задать яркость 0…100 %: ближайшая ступень платы сверху + множитель цвета. «Авто-режим платы» цвет из регистра не берёт — там только 4 ступени.</summary>
+        /// <summary>Задать яркость 0…100 %. «Авто-режим платы» цвет из регистра не берёт — там только 4 ступени (ближайшая).</summary>
         void ApplyBrightness(double vb, bool updateUi)
         {
             Touch();
             _vb = Math.Max(0, Math.Min(100, vb));
             bool scalable = !(_kbHwMode == 1 && !_rainbow);
             int lvl;
-            if (scalable) { lvl = LevelFor(_vb); _kbScale = lvl == 0 ? 1.0 : Math.Min(1.0, _vb / (lvl * 100.0 / 3.0)); }
-            else { lvl = Cfg.Clamp((int)Math.Round(_vb / (100.0 / 3.0)), 0, 3); _kbScale = 1.0; }
+            if (scalable) { lvl = LevelFor(_vb); _kbScale = lvl == 0 ? 1.0 : Math.Min(1.0, LumFor(_vb) / LvlLum[lvl]); }
+            else
+            {
+                double l = LumFor(_vb); lvl = 0; double best = double.MaxValue;
+                for (int k = 0; k <= 3; k++) { double d = Math.Abs(LvlLum[k] - l); if (d < best) { best = d; lvl = k; } }
+                _kbScale = 1.0;
+            }
             if (lvl != _hwLvl) { _ownLevel = lvl; _ownTick = Environment.TickCount; Mi.Set(Mi.M_KBBRIGHT, (byte)lvl); _hwLvl = lvl; }
             if (lvl > 0 && scalable && !_rainbow) WriteScaledColor();      // при радуге цвет пишет её поток (с тем же множителем)
             if (updateUi) { bool l = _loading; _loading = true; tBright.Value = Cfg.Clamp((int)Math.Round(_vb), 0, 100); _loading = l; }
         }
 
-        /// <summary>Событие яркости от платы (Fn+F9 / Fn+F8). Одиночное нажатие — ступень, как у платы; серия событий подряд (клавиша удерживается) — плавный ход.</summary>
+        /// <summary>Событие яркости от платы (клавиши Fn): плата сама шагает по ступеням — просто отражаем её ступень на ползунке.</summary>
         void HandleFnBrightness(int val)
         {
-            int now = Environment.TickCount;
-            if (val == _ownLevel && unchecked(now - _ownTick) < 250) return;      // это отражение нашей же записи
+            if (val == _ownLevel && unchecked(Environment.TickCount - _ownTick) < 250) return;      // это отражение нашей же записи
             Touch();
-            int prev = _hwLvl < 0 ? val : _hwLvl;
-            int delta = ((val - prev) % 4 + 4) % 4;
-            int dir = delta == 3 ? -1 : 1;                                          // +1 → вверх, −1 → вниз (по циклу уровней платы)
-            bool within = _fnbCount > 0 && unchecked(now - _fnbTick) < 700;
-            _fnbTick = now; _lastEcTick = now;
-            if (_ramping) { _hwLvl = val; ApplyBrightness(_vb, true); return; }   // плата шагнула сама — возвращаем наше плавное значение
-            if (within) { _fnbCount++; _hwLvl = val; StartRamp(dir); return; }
-            _fnbCount = 1;
-            _hwLvl = val;                                                           // одиночное нажатие: плата уже на ступени val
-            _vb = val * 100.0 / 3.0;
-            ApplyBrightness(_vb, true);
+            _hwLvl = val;
+            ApplyBrightness(VbForLevel(val), true);
             _cfg.KbVb = (int)Math.Round(_vb); _cfg.Save();
-        }
-
-        void StartRamp(int dir)
-        {
-            _rampDir = dir; _ramping = true;
-            if (_rampTimer == null) { _rampTimer = new System.Windows.Forms.Timer { Interval = 50 }; _rampTimer.Tick += delegate { RampTick(); }; }
-            _rampTimer.Start();
-            Log.Write("brightness ramp start dir=" + dir + " vb=" + Math.Round(_vb));
-        }
-
-        void RampTick()
-        {
-            if (unchecked(Environment.TickCount - _lastEcTick) > 900) { StopRamp(); return; }   // событий нет — клавишу отпустили
-            _vb = Math.Max(0, Math.Min(100, _vb + _rampDir * 2.5));                            // ≈ 50 % в секунду
-            ApplyBrightness(_vb, true);
-        }
-
-        void StopRamp()
-        {
-            if (_rampTimer != null) _rampTimer.Stop();
-            _ramping = false; _fnbCount = 0;
-            _cfg.KbVb = (int)Math.Round(_vb); _cfg.Save();
-            Log.Write("brightness ramp stop vb=" + Math.Round(_vb));
         }
 
         // --- плавная радуга: плата сама ничего не анимирует, поэтому перебираем оттенок через цветовой регистр
@@ -1134,26 +1115,27 @@ namespace Mrid6Helper
                 UI(delegate { _kbColor = Color.FromArgb(200, 100, 50); cbKb.SelectedIndex = 2; tBright.Value = 100; }); Thread.Sleep(900);
                 UI(delegate { tBright.Value = 50; }); Thread.Sleep(900);
                 byte sr, sg, sb2; Mi.GetColor(out sr, out sg, out sb2);
-                Chk("плавная яркость: 50 % → ступень платы 2", Mi.GetByte(Mi.M_KBBRIGHT) == 2, "hw=" + Mi.GetByte(Mi.M_KBBRIGHT));
-                Chk("  цвет в регистре масштабирован на 75 % (≈150,75,38)", Math.Abs(sr - 150) <= 2 && Math.Abs(sg - 75) <= 2 && Math.Abs(sb2 - 38) <= 2, sr + "," + sg + "," + sb2);
+                // 50 % воспринимаемой яркости = световой поток 0,25 → ступень платы 1 (0,40), цвет ×0,625
+                Chk("плавная яркость: 50 % → ступень платы 1", Mi.GetByte(Mi.M_KBBRIGHT) == 1, "hw=" + Mi.GetByte(Mi.M_KBBRIGHT));
+                Chk("  цвет в регистре масштабирован на 62,5 % (≈125,63,31)", Math.Abs(sr - 125) <= 2 && Math.Abs(sg - 63) <= 2 && Math.Abs(sb2 - 31) <= 2, sr + "," + sg + "," + sb2);
+                UI(delegate { tBright.Value = 75; }); Thread.Sleep(800);
+                byte tr, tg, tb3; Mi.GetColor(out tr, out tg, out tb3);
+                Chk("  75 % ползунка — ещё НЕ максимум (световой поток 0,56: ступень 2, цвет ×0,80)", Mi.GetByte(Mi.M_KBBRIGHT) == 2 && Math.Abs(tr - 160) <= 3, "hw=" + Mi.GetByte(Mi.M_KBBRIGHT) + " R=" + tr);
+                UI(delegate { tBright.Value = 100; }); Thread.Sleep(800);
+                byte mr, mg, mb; Mi.GetColor(out mr, out mg, out mb);
+                Chk("  100 % — максимум: ступень 3, цвет без ослабления", Mi.GetByte(Mi.M_KBBRIGHT) == 3 && mr == 200 && mg == 100 && mb == 50, "hw=" + Mi.GetByte(Mi.M_KBBRIGHT) + " " + mr + "," + mg + "," + mb);
                 UI(delegate { tBright.Value = 40; }); Thread.Sleep(700);
                 byte ur, ug, ub; Mi.GetColor(out ur, out ug, out ub);
-                Chk("  40 % — темнее при той же ступени платы", Mi.GetByte(Mi.M_KBBRIGHT) == 2 && ur < sr, "R " + sr + " → " + ur);
-                // имитация Fn: одиночное нажатие = ступень, удержание = плавный подъём
-                UI(delegate { tBright.Value = 20; }); Thread.Sleep(900);            // ступень 1
+                Chk("  40 % — темнее при той же ступени платы", Mi.GetByte(Mi.M_KBBRIGHT) == 1 && ur < sr, "R " + sr + " → " + ur);
+                // клавиши Fn: плата шагает по ступеням, ползунок отражает ступень (плавного хода по клавишам нет)
+                UI(delegate { tBright.Value = 20; }); Thread.Sleep(900);
                 UI(delegate { HandleFnBrightness(2); }); Thread.Sleep(400);
                 double vTap = 0; UI(delegate { vTap = _vb; });
-                Chk("Fn одиночное нажатие = ступень платы (≈ 66,7 %)", Math.Abs(vTap - 66.67) < 1, "vb=" + Math.Round(vTap, 1));
-                Thread.Sleep(1200);
-                UI(delegate { tBright.Value = 20; }); Thread.Sleep(900);            // снова ступень 1
-                UI(delegate { HandleFnBrightness(2); }); Thread.Sleep(250);       // первое событие удержания → ступень
-                UI(delegate { HandleFnBrightness(3); }); Thread.Sleep(300);       // повтор подряд → плавный ход вверх
-                double v1 = 0, v2 = 0; bool rampOn = false; UI(delegate { v1 = _vb; rampOn = _ramping; });
-                Thread.Sleep(500); UI(delegate { v2 = _vb; });
-                Chk("Fn удержание: включился плавный ход (не ступени)", rampOn && Math.Abs(v2 - v1) > 5, "vb " + Math.Round(v1) + " → " + Math.Round(v2) + " %");
-                Thread.Sleep(1400);                                              // событий нет — клавишу отпустили
-                bool rampOff = true; double vEnd = 0; UI(delegate { rampOff = !_ramping; vEnd = _vb; });
-                Chk("  после отпускания ход останавливается", rampOff, "vb=" + Math.Round(vEnd) + " %");
+                Chk("Fn: ступень платы 2 → ползунок ≈ " + Math.Round(VbForLevel(2)) + " %", Math.Abs(vTap - VbForLevel(2)) < 1, "vb=" + Math.Round(vTap, 1));
+                UI(delegate { HandleFnBrightness(3); }); Thread.Sleep(300);
+                UI(delegate { vTap = _vb; });
+                Chk("Fn: серия нажатий — просто ступени (ступень 3 → 100 %, без плавного хода)", Math.Abs(vTap - 100) < 1, "vb=" + Math.Round(vTap, 1));
+                Mi.Set(Mi.M_KBBRIGHT, 3);      // имитированные события железо не меняют — выровнять ступень платы с тем, что «известно» приложению
 
                 Stage("подсветка");
                 // --- кривая вентиляторов: расчёты без железа
@@ -1318,8 +1300,8 @@ namespace Mrid6Helper
                 if (s.FnLock >= 0 && cFnLock.Checked != (s.FnLock == 1)) cFnLock.Checked = s.FnLock == 1;
                 if (s.Tp >= 0 && cTp.Checked != (s.Tp == 1)) cTp.Checked = s.Tp == 1;
                 if (s.Amb >= 0 && cAmb.Checked != (s.Amb == 1)) cAmb.Checked = s.Amb == 1;
-                if (!_ramping && !tBright.Capture && s.KbBright >= 0 && s.KbBright <= 3 && s.KbBright != _hwLvl)
-                { _hwLvl = s.KbBright; _vb = s.KbBright * 100.0 / 3.0; _kbScale = 1.0; tBright.Value = (int)Math.Round(_vb); }
+                if (!tBright.Capture && s.KbBright >= 0 && s.KbBright <= 3 && s.KbBright != _hwLvl)
+                { _hwLvl = s.KbBright; _vb = VbForLevel(s.KbBright); _kbScale = 1.0; tBright.Value = (int)Math.Round(_vb); }
                 if (s.KbMode >= 0) _kbHwMode = s.KbMode;
                 if (s.KbMode >= 0 && s.KbBright >= 0 && !cbKb.DroppedDown) { int ki = KbIndex(s.KbMode, _hwLvl); if (cbKb.SelectedIndex != ki) cbKb.SelectedIndex = ki; }
             }
